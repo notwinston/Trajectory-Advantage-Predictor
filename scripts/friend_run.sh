@@ -40,8 +40,8 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PROVIDER="${PROVIDER:-datacrunch}"
 
 case "$DOMAIN" in
-  math|code)    MAXTOK=768; MB=2 ;;   # long gen => small micro-batch so it fits A100-40 (avoids OOM)
-  science|mmlu) MAXTOK=256; MB=8 ;;
+  math|code)    MAXTOK=768; MB=2; EB=12 ;;  # long gen: small GRAD batch (OOM) + big eval batch (speed)
+  science|mmlu) MAXTOK=256; MB=8; EB=8 ;;
   *) echo "domain must be one of: math code science mmlu"; exit 1 ;;
 esac
 
@@ -60,7 +60,7 @@ while true; do
     if python3 run_tap_pod.py \
         --provider "$PROVIDER" --gpu-type "$GT" --gpu-count "$GC" --shard-total "$GC" \
         --domain "$DOMAIN" --model-name Qwen/Qwen3-1.7B \
-        --cohort-size 4 --group-size 8 --temperature 1.2 --max-new-tokens "$MAXTOK" --micro-batch "$MB" \
+        --cohort-size 4 --group-size 8 --temperature 1.2 --max-new-tokens "$MAXTOK" --micro-batch "$MB" --eval-batch "$EB" \
         --grpo-steps 15 --lr 3e-4 --probe-size 128 --probe-k 4 --anchors-per-chain 1 \
         --n-random 24 --seeds 3 --seed "$SEED" \
         --ssh-key "$SSH_KEY" --output-dir "$OUT"; then

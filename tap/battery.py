@@ -76,7 +76,8 @@ class BatteryConfig:
     eval_greedy: bool = True     # deterministic probe eval -> kills acc sampling noise
     acc_eval: bool = True        # measure greedy accuracy (slow); off => NLL-only gate
     grad_clip: float = 1.0
-    micro_batch: int = 8         # padded seqs per fwd/bwd pass (memory <-> throughput)
+    micro_batch: int = 8         # GRAD logp fwd/bwd batch (full-vocab fp32 logits => OOM-prone, keep low for long gen)
+    eval_batch: int = 0          # generation/grad-free batch (KV-cache cheap, no OOM); 0 => micro_batch
     kl_beta: float = 0.04        # KL-to-reference weight (GRPO objective)
     clip_eps: float = 0.2        # importance-ratio clip (PPO/GRPO surrogate)
     adv_eps: float = 1e-8
@@ -221,10 +222,11 @@ def eval_accuracy(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> float
     old_side = tok.padding_side
     tok.padding_side = "left"      # left-pad for batched decoder-only generation
     correct = 0
+    eb = cfg.eval_batch or cfg.micro_batch    # generation has no grad graph => safe to batch big
     try:
-        for i in range(0, len(rows), cfg.micro_batch):
-            chunk = rows[i:i + cfg.micro_batch]
-            enc = tok(prompts[i:i + cfg.micro_batch], return_tensors="pt", padding=True).to(cfg.device)
+        for i in range(0, len(rows), eb):
+            chunk = rows[i:i + eb]
+            enc = tok(prompts[i:i + eb], return_tensors="pt", padding=True).to(cfg.device)
             with torch.no_grad():
                 gen = model.generate(**enc, max_new_tokens=cfg.max_new_tokens, do_sample=False,
                                      pad_token_id=tok.pad_token_id, eos_token_id=eos)
@@ -341,11 +343,12 @@ def _token_logps_batch(model, fulls, prompt_lens, pad_id, cfg: BatteryConfig, *,
     import torch
 
     ctx = torch.enable_grad() if grad else torch.no_grad()
+    mb = cfg.micro_batch if grad else (cfg.eval_batch or cfg.micro_batch)  # no grad => no graph => batch big
     out = []
     with ctx:
-        for i in range(0, len(fulls), cfg.micro_batch):
-            chunk = fulls[i : i + cfg.micro_batch]
-            plens = prompt_lens[i : i + cfg.micro_batch]
+        for i in range(0, len(fulls), mb):
+            chunk = fulls[i : i + mb]
+            plens = prompt_lens[i : i + mb]
             width = max(len(s) for s in chunk)
             ids = torch.full((len(chunk), width), pad_id, dtype=torch.long, device=cfg.device)
             attn = torch.zeros((len(chunk), width), dtype=torch.long, device=cfg.device)
@@ -617,7 +620,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="sampling temperature for rollouts; >1 raises within-group reward variance (GRPO signal)")
     p.add_argument("--max-new-tokens", type=int, default=512)
     p.add_argument("--micro-batch", type=int, default=BatteryConfig.micro_batch,
-                   help="seqs per fwd/bwd pass; lower => less GPU memory (fixes OOM on long-gen domains)")
+                   help="GRAD logp fwd/bwd batch; lower => less GPU memory (fixes OOM on long-gen domains)")
+    p.add_argument("--eval-batch", type=int, default=BatteryConfig.eval_batch,
+                   help="generation/grad-free batch (no OOM); 0 => micro_batch. Use high (8-16) for long-gen domains")
     p.add_argument("--probe-size", type=int, default=64)
     p.add_argument("--probe-k", type=int, default=4)
     p.add_argument("--eval-sample", dest="eval_greedy", action="store_false",
@@ -662,7 +667,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = BatteryConfig(model_name=args.model_name, domain_name=args.domain, device=args.device, dtype=args.dtype,
                         grpo_steps=args.grpo_steps, group_size=args.group_size, max_new_tokens=args.max_new_tokens,
-                        micro_batch=args.micro_batch,
+                        micro_batch=args.micro_batch, eval_batch=args.eval_batch,
                         probe_k=args.probe_k, eval_greedy=args.eval_greedy, acc_eval=args.acc_eval, n_chains=args.n_chains,
                         anchors_per_chain=args.anchors_per_chain, seeds=args.seeds, lr=args.lr, seed=args.seed,
                         temperature=args.temperature)
