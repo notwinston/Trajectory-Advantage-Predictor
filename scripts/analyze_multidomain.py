@@ -60,6 +60,41 @@ def leave_one_domain_out(rows, *, label, feature_keys, standardize, backend):
     return overall, per
 
 
+def few_shot_transfer(rows, *, label, feature_keys, standardize, backend,
+                      ks=(0, 5, 10, 20), reps=6, seed=0):
+    """How many held-out-domain labels does it take to 'close' transfer?
+
+    For each held-out domain: train on the other domains' FULL labels + k random
+    held-out-domain labels, predict the rest of the held-out domain. k=0 is the
+    zero-shot rung; rising spearman with k = cheap few-shot calibration recovers it.
+    """
+
+    d = build_xy(rows, label=label, feature_keys=list(feature_keys), standardize_domains=standardize)
+    X, y, names, domains = d["X"], d["y"], d["names"], np.asarray(d["domains"])
+    rng = np.random.default_rng(seed)
+    out = {}
+    for g in sorted(set(domains.tolist())):
+        gi = np.where(domains == g)[0]
+        oi = np.where(domains != g)[0]
+        if len(gi) < 8 or np.nanstd(y[gi]) == 0 or len(oi) < 3:
+            continue
+        res = {}
+        for k in ks:
+            sp = []
+            for _ in range(reps):
+                perm = rng.permutation(gi)
+                cal, test = perm[:k], perm[k:]
+                if len(test) < 3 or np.nanstd(y[test]) == 0:
+                    continue
+                tr = np.concatenate([oi, cal])
+                pred = LiftPredictor(backend=backend, monotone=True).fit(X[tr], y[tr], names=names).predict(X[test])
+                sp.append(M.spearman(pred, y[test]))
+            if sp:
+                res[k] = round(float(np.mean(sp)), 3)
+        out[g] = res
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", nargs="+", required=True)
@@ -96,6 +131,15 @@ def main(argv: list[str] | None = None) -> None:
             print(f"[{nm:24s}] overall={ov:+.3f}  per-held-out-domain={per}")
         except Exception as e:
             print(f"[{nm:24s}] failed: {e}")
+
+    print("\n=== few-shot calibration (mechanism+standardized; spearman vs #held-out-domain labels) ===")
+    try:
+        fs = few_shot_transfer(rows, label=args.label, feature_keys=MECHANISM_KEYS,
+                               standardize=True, backend=args.backend)
+        for g, res in fs.items():
+            print(f"  held-out {g:9s}: " + "  ".join(f"k={k}:{v:+.3f}" for k, v in sorted(res.items())))
+    except Exception as e:
+        print(f"  few-shot failed: {e}")
 
 
 if __name__ == "__main__":
