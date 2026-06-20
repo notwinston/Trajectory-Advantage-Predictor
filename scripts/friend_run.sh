@@ -58,7 +58,7 @@ while true; do
         --domain "$DOMAIN" --model-name Qwen/Qwen3-1.7B \
         --cohort-size 4 --group-size 8 --temperature 1.2 --max-new-tokens "$MAXTOK" \
         --grpo-steps 15 --lr 3e-4 --probe-size 64 --probe-k 4 --anchors-per-chain 1 \
-        --n-random 40 --seeds 1 --seed "$SEED" \
+        --n-random 40 --seeds 3 --seed "$SEED" \
         --ssh-key "$SSH_KEY" --output-dir "$OUT"; then
       n=$(cat "$OUT"/labels.jsonl 2>/dev/null | wc -l | tr -d ' ')
       echo "=== batch done: ~${n} labels saved to ${OUT} ==="
