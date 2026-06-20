@@ -60,6 +60,7 @@ def corrupt_answer(answer: str) -> str:
 @dataclass
 class BatteryConfig:
     model_name: str = "Qwen/Qwen2.5-Math-1.5B-Instruct"
+    domain_name: str = "math"     # math | code | science (selects data + verifier + render)
     device: str = "cuda"
     dtype: str = "bfloat16"
     lora_r: int = 16
@@ -134,16 +135,16 @@ def _question(row: dict) -> str:
 # ---- generation + scoring -----------------------------------------------------
 
 
-def _render(tok, q: str) -> str:
-    from math_loop.answers import NON_THINKING_SYSTEM_PROMPT, render_prompt
+def _render(tok, q: str, cfg: "BatteryConfig") -> str:
+    from tap.domains import chat_render, get_domain
 
-    return render_prompt(tok, q, NON_THINKING_SYSTEM_PROMPT)
+    return chat_render(tok, q, get_domain(cfg.domain_name).system)
 
 
 def _sample(model, tok, q: str, cfg: BatteryConfig, n: int, *, greedy: bool = False):
     import torch
 
-    enc = tok(_render(tok, q), return_tensors="pt").to(cfg.device)
+    enc = tok(_render(tok, q, cfg), return_tensors="pt").to(cfg.device)
     gkw = dict(max_new_tokens=cfg.max_new_tokens, pad_token_id=tok.pad_token_id, eos_token_id=tok.eos_token_id)
     if greedy:  # deterministic: one completion, no sampling variance in the eval
         gkw.update(do_sample=False, num_return_sequences=1)
@@ -162,10 +163,10 @@ def _sample(model, tok, q: str, cfg: BatteryConfig, n: int, *, greedy: bool = Fa
     return enc.input_ids[0].tolist(), comps
 
 
-def _reward(text: str, answer: str) -> float:
-    from math_loop.answers import exact_match, extract_boxed_answer
+def _reward(text: str, item: dict, cfg: "BatteryConfig") -> float:
+    from tap.domains import get_domain
 
-    return 1.0 if exact_match(extract_boxed_answer(text, strict=True), answer) else 0.0
+    return get_domain(cfg.domain_name).reward(text, item)
 
 
 def _completion_signals(model, tok, prompt_ids: list[int], comp_ids: list[int], cfg: BatteryConfig) -> dict:
@@ -208,7 +209,7 @@ def eval_accuracy(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> float
     for row in rows:
         _, comps = _sample(model, tok, _question(row), cfg, k, greedy=cfg.eval_greedy)
         for c in comps:
-            correct += int(_reward(tok.decode(c, skip_special_tokens=True), row["answer"]) > 0.5)
+            correct += int(_reward(tok.decode(c, skip_special_tokens=True), row, cfg) > 0.5)
             total += 1
     return correct / max(total, 1)
 
@@ -220,7 +221,7 @@ def eval_nll(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> float:
     model.eval()
     fulls, plens = [], []
     for row in rows:
-        prompt = _render(tok, _question(row))
+        prompt = _render(tok, _question(row), cfg)
         target = (row.get("solution") or f"\\boxed{{{row['answer']}}}").strip()
         pids = tok(prompt, add_special_tokens=False).input_ids
         ids = tok(prompt + target + (tok.eos_token or ""), add_special_tokens=False).input_ids[: cfg.max_seq_len]
@@ -272,7 +273,7 @@ def fingerprint(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> dict:
     model.eval()
     nlls, ents = [], []
     for row in rows:
-        prompt = _render(tok, _question(row))
+        prompt = _render(tok, _question(row), cfg)
         pids = tok(prompt, add_special_tokens=False).input_ids
         comp = tok((row.get("solution") or f"\\boxed{{{row['answer']}}}"), add_special_tokens=False).input_ids
         sig = _completion_signals(model, tok, pids, comp, cfg)
@@ -344,12 +345,12 @@ def collect_trajectories(model, tok, cohort_rows, cfg: BatteryConfig, noisy_ids:
     for row in cohort_rows:
         pids, comps = _sample(model, tok, _question(row), cfg, cfg.group_size)
         tok_lists.append(tok(_question(row), add_special_tokens=False).input_ids)
-        answer = corrupt_answer(row["answer"]) if str(row["id"]) in noisy_ids else row["answer"]
+        item = {**row, "answer": corrupt_answer(row.get("answer", ""))} if str(row["id"]) in noisy_ids else row
         for c in comps:
             if not c:
                 continue
             trajs.append(Traj(prompt_ids=list(pids), comp_ids=list(c),
-                              reward=_reward(tok.decode(c, skip_special_tokens=True), answer),
+                              reward=_reward(tok.decode(c, skip_special_tokens=True), item, cfg),
                               group_id=str(row["id"])))
     for ts in {t.group_id: None for t in trajs}:  # group-relative advantages
         members = [t for t in trajs if t.group_id == ts]
@@ -514,6 +515,8 @@ def run_battery(cfg: BatteryConfig, cohorts: Sequence[Cohort], probes: dict, row
                     label = LiftLabel(acc_before, acc_after, nll_before, nll_after, kl_before, kl_after)
                     rec = {
                         "schema_version": 3,
+                        "domain": cfg.domain_name,
+                        "model_name": cfg.model_name,
                         "chain_id": chain,
                         "anchor_index": anchor,
                         "candidate_id": cohort.name,
@@ -561,6 +564,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--pass-rates", type=Path, default=None)
     p.add_argument("--output", type=Path, default=Path("outputs/tap/labels.jsonl"))
     p.add_argument("--model-name", default=BatteryConfig.model_name)
+    p.add_argument("--domain", default="math", choices=("math", "code", "science"))
     p.add_argument("--device", default="cuda")
     p.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
     p.add_argument("--grpo-steps", type=int, default=4)
@@ -589,10 +593,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
-    from tap.data_probes import prepare_probes
+    from tap.domains import get_domain
 
     args = parse_args(argv)
-    bundle = prepare_probes(args.data_dir, probe_size=args.probe_size)
+    bundle = get_domain(args.domain).load_splits(args.data_dir, probe_size=args.probe_size,
+                                                 fingerprint_size=16, seed=args.seed)
     rows_by_id = {r["id"]: r for r in bundle["train_rows"]}
 
     if args.cohorts is not None:
@@ -609,7 +614,7 @@ def main(argv: list[str] | None = None) -> None:
         i, n = (int(x) for x in args.shard.split("/"))
         cohorts = cohorts[i::n]
 
-    cfg = BatteryConfig(model_name=args.model_name, device=args.device, dtype=args.dtype,
+    cfg = BatteryConfig(model_name=args.model_name, domain_name=args.domain, device=args.device, dtype=args.dtype,
                         grpo_steps=args.grpo_steps, group_size=args.group_size, max_new_tokens=args.max_new_tokens,
                         probe_k=args.probe_k, eval_greedy=args.eval_greedy, acc_eval=args.acc_eval, n_chains=args.n_chains,
                         anchors_per_chain=args.anchors_per_chain, seeds=args.seeds, lr=args.lr, seed=args.seed,
