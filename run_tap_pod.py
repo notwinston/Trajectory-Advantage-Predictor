@@ -126,6 +126,11 @@ def run_on_pod(args, pod_id, repo_root, output_dir, *, reuse=None) -> None:
                             f"mkdir -p {REMOTE_REPO} {REMOTE_WORK} 2>/dev/null || "
                             f"(sudo mkdir -p /workspace && sudo chown -R $(id -u):$(id -g) /workspace && "
                             f"mkdir -p {REMOTE_REPO} {REMOTE_WORK})"])
+    # some provider images (runpod/etc.) lack rsync; install before upload_repo uses it
+    base.remote(ssh, dest, ["bash", "-lc",
+                            "command -v rsync >/dev/null 2>&1 || "
+                            "{ sudo apt-get update -qq && sudo apt-get install -y -qq rsync; } || "
+                            "{ apt-get update -qq && apt-get install -y -qq rsync; }"])
     base.upload_repo(ssh, dest, repo_root)
     if reuse is None:
         print("Installing deps...", flush=True)
