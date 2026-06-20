@@ -35,3 +35,7 @@ python run_prime_rl_math_loop.py --dry-run
 python -m unittest discover
 python -m py_compile run_prime_rl_math_loop.py math_loop/*.py tests/*.py
 ```
+
+The pod runner reads `~/.prime/config.json` for `ssh_key_path` when `--ssh-key`
+is omitted, then falls back to `~/.ssh/quack_prime`, `~/.ssh/id_ed25519`, and
+`~/.ssh/id_rsa`.

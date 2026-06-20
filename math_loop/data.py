@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import json
@@ -97,7 +98,23 @@ def split_math_rows(
     if len(rows) <= probe_size:
         raise ValueError(f"need more than {probe_size} MATH rows, got {len(rows)}")
 
-    normalized = [normalize_math_row(row, index) for index, row in enumerate(rows)]
+    normalized, skipped = normalize_math_rows(rows)
+    if skipped:
+        print(
+            f"Skipping {sum(skipped.values())} MATH rows without usable labels: {dict(skipped)}",
+            flush=True,
+        )
+    return split_normalized_math_rows(normalized, probe_size=probe_size, seed=seed)
+
+
+def split_normalized_math_rows(
+    normalized: Sequence[dict[str, Any]], *, probe_size: int = 128, seed: int = 1729
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if len(normalized) <= probe_size:
+        raise ValueError(
+            f"need more than {probe_size} valid MATH rows after filtering, "
+            f"got {len(normalized)}"
+        )
     indices = list(range(len(normalized)))
     random.Random(seed).shuffle(indices)
     probe_indices = set(indices[:probe_size])
@@ -113,6 +130,17 @@ def split_math_rows(
             split_row["split"] = "train_pool"
             train_pool.append(split_row)
     return train_pool, probe
+
+
+def normalize_math_rows(rows: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], Counter[str]]:
+    normalized: list[dict[str, Any]] = []
+    skipped: Counter[str] = Counter()
+    for index, row in enumerate(rows):
+        try:
+            normalized.append(normalize_math_row(row, index))
+        except ValueError as exc:
+            skipped[str(exc).split(" has ", 1)[-1]] += 1
+    return normalized, skipped
 
 
 def normalize_math500_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -150,9 +178,34 @@ def prepare_training_splits(
         return TrainingSplitPaths(train_pool=train_path, probe=probe_path)
 
     rows = _load_hf_rows(math_dataset, math_split, math_dataset_config)
-    train_pool, probe = split_math_rows(rows, probe_size=probe_size, seed=seed)
+    normalized, skipped = normalize_math_rows(rows)
+    if skipped:
+        print(
+            f"Skipping {sum(skipped.values())} MATH rows without usable labels: {dict(skipped)}",
+            flush=True,
+        )
+    train_pool, probe = split_normalized_math_rows(normalized, probe_size=probe_size, seed=seed)
     write_jsonl(train_path, train_pool)
     write_jsonl(probe_path, probe)
+    metadata = {
+        "math_dataset": math_dataset,
+        "math_split": math_split,
+        "raw_rows": len(rows),
+        "valid_rows": len(normalized),
+        "skipped_rows": sum(skipped.values()),
+        "skip_reasons": dict(skipped),
+        "probe_size": probe_size,
+        "seed": seed,
+    }
+    (data_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"Prepared MATH splits: {len(train_pool)} train_pool, {len(probe)} probe, "
+        f"{metadata['skipped_rows']} skipped. Metadata: {data_dir / 'metadata.json'}",
+        flush=True,
+    )
     return TrainingSplitPaths(train_pool=train_path, probe=probe_path)
 
 

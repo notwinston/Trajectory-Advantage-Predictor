@@ -20,6 +20,11 @@ IMAGE = "ubuntu_22_cuda_12"
 REMOTE_REPO = "/workspace/math_loop_repo"
 REMOTE_PRIME_RL = "/workspace/prime-rl"
 REMOTE_WORK = "/workspace/math_loop_runs"
+DEFAULT_KEY_CANDIDATES = (
+    "~/.ssh/quack_prime",
+    "~/.ssh/id_ed25519",
+    "~/.ssh/id_rsa",
+)
 
 
 def run(command: list[str], *, timeout: int = 300, log: Path | None = None, stream: bool = False) -> str:
@@ -64,7 +69,49 @@ def run(command: list[str], *, timeout: int = 300, log: Path | None = None, stre
 
 
 def prime_json(*args: str) -> dict:
-    return json.loads(run(["prime", *args, "--output", "json"]))
+    output = run(["prime", *args, "--output", "json"])
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(output):
+            if char not in "{[":
+                continue
+            try:
+                parsed, end = decoder.raw_decode(output[index:])
+            except json.JSONDecodeError:
+                continue
+            if output[index + end :].strip():
+                continue
+            prefix = output[:index].strip()
+            if prefix:
+                print(prefix, file=sys.stderr)
+            return parsed
+        tail = output[-2000:].strip()
+        raise RuntimeError(f"Prime CLI did not return parseable JSON. Output tail:\n{tail}") from exc
+
+
+def resolve_ssh_key(path: Path | None) -> Path:
+    if path is not None:
+        return path.expanduser().resolve()
+
+    prime_config = Path("~/.prime/config.json").expanduser()
+    if prime_config.exists():
+        try:
+            config = json.loads(prime_config.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            config = {}
+        configured = config.get("ssh_key_path")
+        if configured:
+            candidate = Path(configured).expanduser().resolve()
+            if candidate.exists():
+                return candidate
+
+    for candidate_text in DEFAULT_KEY_CANDIDATES:
+        candidate = Path(candidate_text).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+    return Path("~/.ssh/id_rsa").expanduser().resolve()
 
 
 def normalize_gpu_type(value: str) -> str:
@@ -159,17 +206,33 @@ def build_bootstrap_command() -> list[str]:
     script = f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl git rsync python3-venv build-essential
+apt_retry() {{
+  for attempt in $(seq 1 60); do
+    apt-get -o DPkg::Lock::Timeout=30 "$@" && return 0
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      return 0
+    fi
+    echo "apt-get $* failed with status $status; waiting for package manager lock ($attempt/60)"
+    sleep 10
+  done
+  return "$status"
+}}
+apt_retry update
+apt_retry install -y --no-install-recommends ca-certificates curl git openssh-client rsync python3-venv build-essential
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="url.https://github.com/.insteadOf"
+export GIT_CONFIG_VALUE_0="git@github.com:"
 if [ ! -d {REMOTE_PRIME_RL}/.git ]; then
-  git clone --depth 1 https://github.com/PrimeIntellect-ai/prime-rl {REMOTE_PRIME_RL}
+  git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/PrimeIntellect-ai/prime-rl {REMOTE_PRIME_RL}
 fi
 cd {REMOTE_PRIME_RL}
-uv sync
+git submodule update --init --recursive --depth 1
+uv sync --all-extras
 mkdir -p {REMOTE_WORK}
 """
     return ["bash", "-lc", script]
@@ -177,6 +240,13 @@ mkdir -p {REMOTE_WORK}
 
 def build_remote_controller_command(args: argparse.Namespace) -> list[str]:
     probe_device = "cuda:2" if args.gpu_count >= 3 else "cuda"
+    version_check = [
+        "uv",
+        "run",
+        "python",
+        "-c",
+        "import math_loop.controller as c; print('Uploaded math_loop controller version:', c.CONTROLLER_VERSION, flush=True)",
+    ]
     controller = [
         "uv",
         "run",
@@ -199,6 +269,12 @@ def build_remote_controller_command(args: argparse.Namespace) -> list[str]:
         str(args.group_size),
         "--gpu-count",
         str(args.gpu_count),
+        "--model-name",
+        args.model_name,
+        "--seq-len",
+        str(args.seq_len),
+        "--max-completion-tokens",
+        str(args.max_completion_tokens),
         "--probe-device",
         probe_device,
     ]
@@ -209,6 +285,9 @@ def build_remote_controller_command(args: argparse.Namespace) -> list[str]:
         "export PATH=\"$HOME/.local/bin:/root/.local/bin:$PATH\"",
         f"export PYTHONPATH={shlex.quote(REMOTE_REPO)}:${{PYTHONPATH:-}}",
         f"export HF_HOME={shlex.quote(REMOTE_WORK + '/hf_cache')}",
+        "export WANDB_MODE=disabled",
+        "export WANDB_DISABLED=true",
+        shlex.join(version_check),
         shlex.join(controller),
     ]
     return ["bash", "-lc", " && ".join(pieces)]
@@ -264,10 +343,14 @@ def run_on_pod(args: argparse.Namespace, pod_id: str, repo_root: Path, output_di
     remote(ssh, destination, build_bootstrap_command(), timeout=3600, log=log, stream=True)
 
     print("Running math loop controller...", flush=True)
-    remote(ssh, destination, build_remote_controller_command(args), timeout=args.remote_timeout, log=log, stream=True)
-
-    print("Downloading outputs...", flush=True)
-    download_outputs(ssh, destination, output_dir)
+    try:
+        remote(ssh, destination, build_remote_controller_command(args), timeout=args.remote_timeout, log=log, stream=True)
+    finally:
+        print("Downloading outputs...", flush=True)
+        try:
+            download_outputs(ssh, destination, output_dir)
+        except Exception as exc:
+            print(f"WARNING: failed to download remote outputs: {exc}", file=sys.stderr)
 
 
 def create_pod(args: argparse.Namespace) -> str:
@@ -314,7 +397,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--offer-id", help="skip offer selection and create this exact Prime offer id")
     parser.add_argument("--gpu-type", default=DEFAULT_GPU_TYPE)
     parser.add_argument("--gpu-count", type=int, default=2)
-    parser.add_argument("--ssh-key", type=Path, default=Path("~/.ssh/id_rsa"))
+    parser.add_argument("--ssh-key", type=Path, help="SSH private key for the Prime pod")
     parser.add_argument("--spot", action="store_true")
     parser.add_argument("--max-price-per-hour", type=float)
     parser.add_argument("--disk-size-gb", type=int, default=1500)
@@ -322,6 +405,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--candidates-per-state", type=int, default=16)
     parser.add_argument("--batch-prompts", type=int, default=4)
     parser.add_argument("--group-size", type=int, default=4)
+    parser.add_argument("--model-name", default="Qwen/Qwen3-8B")
+    parser.add_argument("--seq-len", type=int, default=4096)
+    parser.add_argument("--max-completion-tokens", type=int, default=1024)
     parser.add_argument("--skip-probe-loss", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/qwen3_math_loop"))
     parser.add_argument("--keep-pod", action="store_true")
@@ -333,7 +419,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     repo_root = Path(__file__).resolve().parent
-    args.ssh_key = args.ssh_key.expanduser().resolve()
+    args.ssh_key = resolve_ssh_key(args.ssh_key)
     if args.gpu_count < 2:
         raise SystemExit("--gpu-count must be at least 2")
     if not args.dry_run and not args.ssh_key.is_file():
