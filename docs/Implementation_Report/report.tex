@@ -111,16 +111,19 @@ atexit + SIGINT/SIGTERM + breach teardown reaping by \texttt{tap-v1-smoke-} pref
 and by id; \texttt{-{}-keep-pod} forbidden; \texttt{-{}-gpu-count > 1} and any
 non-\texttt{-{}-smoke} run gated behind \texttt{TAP\_ALLOW\_FULL\_RUN=1}; SSH via the
 provided \texttt{/workspace/private\_key.pem}. \texttt{reap\_pods.py} refuses empty
-or non-\texttt{tap-v1-} prefixes. \textbf{Credential RESOLVED}: a supplied
-\texttt{PRIME\_API\_KEY} authenticates and \texttt{prime availability list} returns
-a non-empty offers array (8 offers; 1$\times$H100 lambdalabs \$3.29/h). \textbf{Plan
-unknown (d) CONFIRMED at pin} \texttt{4d361ad}: \texttt{class AdvantageOutputs}
-exists and \texttt{verifiers} is a declared dependency. \textbf{Smoke BLOCKED on the
-collection driver}: \texttt{tap\_controller.run\_controller} stubs real runs, and
-\texttt{\_branch\_worker} expects pre-generated rollouts/probes --- the on-pod
-rollout + logprob extraction (unknowns a/b/c) must be built first. That file is
-read-only this wave and the work is substantial, so the smoke cannot produce a
-mini-Parquet here; no pod was provisioned to re-confirm a known gap. See
-\texttt{RUNBOOK.md}.
+or non-\texttt{tap-v1-} prefixes. \textbf{Collection driver IMPLEMENTED +
+CPU-validated}: \texttt{run\_controller} adopts the fresh-branch-weights recipe
+(weights-only branch, \texttt{run\_default} layout, no optimizer resume), reads
+prime-rl's persisted rollouts, scores matched/global + generic-KL probes, computes
+the fingerprint + LoRA gradient sketch, and writes the raw tree \texttt{features}
+converts. A synthetic raw tree at the smoke shape (2 chains $\times$ 1 state $\times$
+2 candidates) passes \texttt{features.convert} $\to$ \texttt{tap.schema --validate}
+$\to$ \texttt{tap.run\_all} (exit 0). \textbf{Pod path validated through bootstrap +
+pre-flight} on a 2$\times$H100 lambdalabs pod: prime-rl pinned \texttt{4d361ad} with
+submodules, \texttt{uv sync --all-extras}, \texttt{peft} installed, import (d)
+resolves. Pod-validated launcher fixes baked in: 2-GPU minimum, sudo +
+\texttt{/workspace} for lambdalabs, https submodule rewrite, peft install, wandb
+disabled. The full GPU collection was not run to completion (stopped to prepare the
+repo); see \texttt{RUNBOOK.md} Step 2.
 
 \end{document}

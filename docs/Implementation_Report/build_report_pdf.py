@@ -158,15 +158,22 @@ def build() -> Path:
         "the provided /workspace/private_key.pem. reap_pods.py refuses empty or non-tap-v1- "
         "prefixes.", body))
     flow.append(Paragraph(
-        "Credential RESOLVED: a supplied PRIME_API_KEY authenticates (prime whoami) and prime "
-        "availability list returns a non-empty offers array (8 offers; 1xH100 lambdalabs $3.29/h). "
-        "Plan unknown (d) CONFIRMED at pin 4d361ad from source: class AdvantageOutputs exists in "
-        "prime_rl/orchestrator/advantage.py and verifiers is a declared dependency. Smoke BLOCKED "
-        "on the collection driver: tap_controller.run_controller stubs real runs and _branch_worker "
-        "expects pre-generated rollouts/probes &mdash; the on-pod rollout + per-token logprob/"
-        "entropy extraction (unknowns a/b/c) must be built first. That file is read-only this wave "
-        "and the work is substantial, so the smoke cannot produce a mini-Parquet here; no pod was "
-        "provisioned to re-confirm a known, documented gap. See RUNBOOK.md.", body))
+        "Collection driver IMPLEMENTED + CPU-validated: run_controller adopts the fresh-branch-"
+        "weights recipe (weights-only branch with model_name = the state checkpoint, one fresh GRPO "
+        "step, run_default checkpoint layout, no optimizer resume), reads prime-rl's persisted "
+        "train_rollouts.jsonl (reward + advantage + completion; per-token logprobs are 0.0 in "
+        "prime-rl so token stats fall back), scores matched/global + generic-KL probes, computes "
+        "the policy fingerprint and LoRA gradient sketch, and writes the raw tree features converts. "
+        "A synthetic raw tree at the smoke shape (2 chains x 1 state x 2 candidates) passes "
+        "features.convert -> tap.schema --validate -> tap.run_all (exit 0).", body))
+    flow.append(Paragraph(
+        "Pod path validated through bootstrap + pre-flight on a 2xH100 lambdalabs pod: prime-rl "
+        "pinned 4d361ad with submodules (incl. verifiers), uv sync --all-extras, peft installed, "
+        "and the not-degradable import (verifiers + AdvantageOutputs) resolves. Pod-validated "
+        "launcher fixes baked in: 2-GPU minimum (1 trainer + 1 inference), sudo + /workspace "
+        "creation for lambdalabs, GIT_CONFIG insteadOf for submodule clones, peft install, and "
+        "wandb disabled. The full GPU collection was not run to completion (stopped to prepare the "
+        "repo for push); RUNBOOK.md Step 2 runs it.", body))
 
     doc.build(flow)
     return OUT

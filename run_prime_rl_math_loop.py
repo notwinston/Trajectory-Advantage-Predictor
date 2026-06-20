@@ -403,9 +403,14 @@ def build_bootstrap_command(prime_rl_commit: str) -> list[str]:
     script = f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+# Pods differ: datacrunch boots as root, lambdalabs as a sudo-capable user with
+# no pre-existing /workspace. Handle both.
+if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; else SUDO=""; fi
+$SUDO mkdir -p /workspace
+$SUDO chown "$(id -un):$(id -gn)" /workspace 2>/dev/null || true
 apt_retry() {{
   for attempt in $(seq 1 60); do
-    apt-get -o DPkg::Lock::Timeout=30 "$@" && return 0
+    $SUDO apt-get -o DPkg::Lock::Timeout=30 "$@" && return 0
     status=$?
     echo "apt-get $* failed with status $status; waiting for package lock ($attempt/60)"
     sleep 10
@@ -430,6 +435,9 @@ git checkout {shlex.quote(prime_rl_commit)}
 git submodule update --init --recursive
 git rev-parse HEAD
 uv sync --all-extras
+# peft is required by the TAP probes (load prime-rl's separately-saved LoRA
+# adapter via PeftModel) but is not a prime-rl dependency, so add it explicitly.
+uv pip install peft
 mkdir -p {REMOTE_WORK}
 """
     return ["bash", "-lc", script]

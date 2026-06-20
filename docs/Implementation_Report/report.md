@@ -181,21 +181,26 @@ authenticates and `prime availability list --gpu-type H100_80GB --output json`
 returns a non-empty offers array (8 offers; 4 lambdalabs, incl. a 1×H100 at
 \$3.29/h). The key lives only in the environment, never on disk in the repo.
 
-**Plan unknown (d) — CONFIRMED at the pin (from source):** at prime-rl HEAD
-`4d361ad`, `class AdvantageOutputs` exists in `prime_rl/orchestrator/advantage.py`
-and `verifiers` is a declared dependency, so the not-feature-degradable pre-flight
-import will not block.
+**Collection driver — IMPLEMENTED + CPU-validated.** `run_controller` is no longer
+a stub: it adopts the proven *fresh-branch-weights* recipe (generate a state,
+branch each candidate weights-only — `model_name` = the state checkpoint, one fresh
+GRPO step, `run_default/` checkpoint layout, no optimizer resume), reads prime-rl's
+persisted `train_rollouts.jsonl` (reward + advantage + completion; per-token
+logprobs are hardcoded 0.0 in prime-rl, so token stats fall back), scores
+matched/global probes + generic-KL before/after, computes the policy fingerprint and
+LoRA gradient sketch, and writes the raw tree `features` converts. A synthetic raw
+tree at the smoke shape (2 chains × 1 state × 2 candidates) passes
+`features.convert` → `tap.schema --validate` → `tap.run_all` (exit 0) end to end.
 
-**Smoke — BLOCKED on the collection driver:** the real (non `--dry-run`)
-`math_loop.tap_controller.run_controller` is a stub (`raise SystemExit`), and the
-per-candidate `_branch_worker` expects pre-generated rollouts/probes — the on-pod
-rollout + per-token logprob/entropy extraction against the real prime-rl (plan
-unknowns a/b/c) must be built before any labels exist. That file is read-only in
-this wave and the work is substantial, so the smoke cannot produce a mini-Parquet
-here; no pod was provisioned to re-confirm a known, documented gap. The launcher,
-reaper, cost/wall-clock guards, schema, featurizer, and eval are all verified on
-CPU + synthetic data and the credentialled provisioning path (auth, availability,
-pin, import (d)) is confirmed. See `RUNBOOK.md` to complete the driver and run.
+**Pod path — validated through bootstrap + pre-flight** on a 2×H100 lambdalabs pod:
+apt-under-lock, prime-rl pinned to `4d361ad` with submodules (incl. `verifiers`),
+`uv sync --all-extras`, `peft` installed, and the not-degradable import
+(`verifiers` + `AdvantageOutputs`) resolves. Pod-validated launcher fixes now baked
+in: 2-GPU minimum (1 trainer + 1 inference), sudo + `/workspace` creation for
+lambdalabs, `GIT_CONFIG insteadOf` for submodule clones, `peft` install, and wandb
+disabled. The full GPU collection was **not run to completion** (stopped to prepare
+the repo); `RUNBOOK.md` Step 2 runs it. The launcher, reaper, cost/wall-clock
+guards, schema, featurizer, and eval are all verified on CPU + synthetic data.
 
 ## 9. Reproduction (CPU)
 
