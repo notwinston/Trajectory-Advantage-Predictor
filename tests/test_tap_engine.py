@@ -521,5 +521,163 @@ class FeatureExtractorTests(unittest.TestCase):
                 os.environ["TAP_NO_TORCH"] = prior
 
 
+import importlib.util as _ilu
+
+_HAS_TORCH = _ilu.find_spec("torch") is not None
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch required for vectorized-probe equivalence")
+class VectorizedProbeMathTests(unittest.TestCase):
+    """The torch-vectorized KL/NLL/entropy must equal the pure-Python aggregators
+    (fp32 tolerance), since they feed identical utility_points labels."""
+
+    def _logits(self, rows, cols, seed):
+        import torch
+
+        return torch.randn(rows, cols, generator=torch.Generator().manual_seed(seed))
+
+    def test_kl_matches_sequence_kl(self):
+        base, branch_l = self._logits(7, 19, 1), self._logits(7, 19, 2)
+        self.assertAlmostEqual(
+            tap_probes.kl_mean_vectorized(base, branch_l),
+            tap_probes.sequence_kl(base.tolist(), branch_l.tolist()),
+            places=5,
+        )
+
+    def test_nll_matches_pure(self):
+        import random
+
+        base = self._logits(6, 13, 3)
+        targets = [random.Random(0).randrange(13) for _ in range(6)]
+        self.assertAlmostEqual(
+            tap_probes.nll_mean_vectorized(base, targets),
+            tap_probes.nll_from_logits_and_targets(base.tolist(), targets),
+            places=5,
+        )
+
+    def test_entropy_matches_pure(self):
+        base = self._logits(5, 11, 4)
+        pure = sum(tap_probes.sequence_entropy(base.tolist())) / 5
+        self.assertAlmostEqual(tap_probes.entropy_mean_vectorized(base), pure, places=5)
+
+    def test_nll_empty_and_out_of_range(self):
+        import torch
+
+        self.assertEqual(tap_probes.nll_mean_vectorized(torch.zeros(0, 5), []), 0.0)
+        base = self._logits(4, 7, 5)
+        oob = [99, 99, 99, 99]  # all out of vocab -> pure-Python skips them -> 0.0
+        self.assertAlmostEqual(
+            tap_probes.nll_mean_vectorized(base, oob),
+            tap_probes.nll_from_logits_and_targets(base.tolist(), oob),
+            places=5,
+        )
+
+
+class ProbeSessionTests(unittest.TestCase):
+    def test_constructs_without_heavy_imports(self):
+        from math_loop.probe_loss import ProbeSession
+
+        with mock.patch.dict(sys.modules, {"torch": None, "transformers": None, "peft": None}):
+            session = ProbeSession(device="cpu")
+            self.assertEqual(session.model_name, "Qwen/Qwen3-8B")
+            self.assertIsNone(session._base)
+
+    def test_grad_sketch_zeroed_under_tap_no_torch(self):
+        import os
+
+        from math_loop.probe_loss import ProbeSession
+
+        prior = os.environ.get("TAP_NO_TORCH")
+        os.environ["TAP_NO_TORCH"] = "1"
+        try:
+            self.assertEqual(ProbeSession(device="cpu").grad_sketch([{"prompt_text": "x"}]), [0.0] * 64)
+        finally:
+            if prior is None:
+                os.environ.pop("TAP_NO_TORCH", None)
+            else:
+                os.environ["TAP_NO_TORCH"] = prior
+
+    def test_use_adapter_loads_once_then_set_adapter(self):
+        from math_loop.probe_loss import ProbeSession
+
+        calls = {"load": [], "set": []}
+
+        class FakePeft:
+            def load_adapter(self, path, adapter_name):
+                calls["load"].append(adapter_name)
+
+            def set_adapter(self, name):
+                calls["set"].append(name)
+
+        session = ProbeSession(device="cpu")
+        session._base = object()      # pretend the base model is already resident
+        session._model = FakePeft()   # ... wrapped in a PeftModel
+        with mock.patch("math_loop.probe_loss.find_adapter_path", return_value=Path("/ckpt/lora_adapters")):
+            n1 = session.use_adapter(Path("/ckpt"))
+            n2 = session.use_adapter(Path("/ckpt"))  # same path -> short-circuit
+        self.assertEqual(n1, n2)
+        self.assertEqual(len(calls["load"]), 1)     # adapter loaded exactly once
+        self.assertEqual(calls["set"], [n1, n1])    # set_adapter on both calls
+
+
+class PersistentInferenceConfigTests(unittest.TestCase):
+    def _spec(self, **kw):
+        from math_loop.prime_rl_config import PrimeRLConfigSpec
+
+        base = dict(
+            output_dir=Path("/o"), split_path=Path("/s.jsonl"), max_steps=1,
+            batch_size=8, group_size=4, model_name="Qwen/Qwen3-8B", lora_rank=16,
+        )
+        base.update(kw)
+        return PrimeRLConfigSpec(**base)
+
+    def test_inference_server_config_is_lora_and_eager(self):
+        from math_loop.prime_rl_config import render_inference_server_config
+
+        text = render_inference_server_config(self._spec())
+        self.assertIn("enable_lora = true", text)
+        self.assertIn("enforce_eager = true", text)
+        self.assertIn("max_lora_rank = 16", text)
+        self.assertIn('name = "Qwen/Qwen3-8B"', text)
+
+    def test_persistent_branch_omits_inference_block(self):
+        from math_loop.prime_rl_config import render_prime_rl_config
+
+        self.assertNotIn("[inference]", render_prime_rl_config(self._spec(include_inference=False)))
+
+    def test_self_contained_config_keeps_inference_with_eager(self):
+        from math_loop.prime_rl_config import render_prime_rl_config
+
+        text = render_prime_rl_config(self._spec(include_inference=True))
+        self.assertIn("[inference]", text)
+        self.assertIn("enforce_eager = true", text)
+
+
+class BackgroundProcessTests(unittest.TestCase):
+    def test_wait_returns_false_when_process_dies(self):
+        from math_loop.controller import wait_for_http_ready
+
+        class DeadProc:
+            def poll(self):
+                return 1  # already exited
+
+        self.assertFalse(
+            wait_for_http_ready("http://127.0.0.1:9/health", timeout=1.0, interval=0.01, proc=DeadProc())
+        )
+
+    def test_stop_process_is_idempotent(self):
+        from math_loop.controller import stop_process
+
+        class ExitedProc:
+            def poll(self):
+                return 0
+
+            def terminate(self):  # pragma: no cover - must not be called
+                raise AssertionError("must not terminate an already-exited process")
+
+        stop_process(ExitedProc())  # no-op, no exception
+        stop_process(None)          # tolerates None
+
+
 if __name__ == "__main__":
     unittest.main()

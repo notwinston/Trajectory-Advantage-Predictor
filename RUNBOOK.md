@@ -41,6 +41,31 @@ run Wave 3.
 - `[wandb]` is removed from the config and `WANDB_MODE=disabled` is exported, so a
   fresh pod doesn't block on a wandb login.
 
+## Throughput: persistent inference server + resident probe model (default ON)
+
+The collection is dominated by two avoidable costs that the controller now removes:
+
+- **vLLM cold-boot per GRPO step** (~80–90s wrapping ~9.5s of real work, ×195 steps).
+  `--persistent-inference` (default on) boots **one** `uv run inference` server on GPU 1
+  and reuses it for every branch + state-gen; those runs use `uv run rl` with the
+  `[inference]` block omitted (trainer on GPU 0, `CUDA_VISIBLE_DEVICES=0`) and connect
+  to the server at the orchestrator's default `base_url` (localhost:8000). The
+  orchestrator re-syncs the resumed before-state LoRA on startup, so the served policy
+  is correct per branch. If the server never reaches ready, the controller **falls back**
+  to per-branch inference automatically. `enforce_eager = true` is set on the server to
+  skip CUDA-graph capture (never amortized for single-step branches) — **verify on the
+  smoke run** that the pinned prime-rl honors it (a 404 on `/health` still counts as
+  "up"; the fallback covers a non-ready server).
+- **~1032 full-Qwen3-8B reloads in the probe phase.** Each state is now processed in
+  three phases: PHASE A runs the 8 branch subprocesses; PHASE B loads **one** resident
+  base model (`ProbeSession`) and labels all 8 candidates via cheap LoRA-adapter swaps
+  (matched/global NLL batched at `--probe-batch-size`, vectorized KL/entropy on GPU,
+  generic-KL base side cached once per state); PHASE C advances + prunes. Labels are
+  numerically identical to the old per-call path (fp32 tolerance) — confirm on the smoke
+  run by diffing a candidate's `probe_after.json` / `utility_points` against a baseline.
+
+Disable with `--no-persistent-inference` to force the old per-branch path.
+
 ## Step 1 — resolve + pin the prime-rl commit
 
 ```bash

@@ -12,12 +12,18 @@ Drives the spec's compressed collection loop (section "DATA-COLLECTION LOOP"):
   SEEDED-RANDOM candidate (keeps the collected history unbiased) and keep the
   last 8 applied updates as history.
 
-Parallel branch dispatch uses a ``ProcessPoolExecutor`` with one worker per GPU
-pinned through ``CUDA_VISIBLE_DEVICES`` (4xH100 => 1 main + 3 workers); it falls
-back to serial when ``--gpu-count`` is small. All GPU/prime-rl execution is Wave
-2 — ``--dry-run`` only plans, makes NO network calls, and imports nothing heavy.
-Module-level imports are stdlib + pure ``math_loop`` modules so
-``import math_loop.tap_controller`` works with torch/transformers/prime absent.
+Each state is processed in three phases to avoid redundant GPU work: PHASE A runs
+the 8 branch GRPO subprocesses (prime-rl), PHASE B loads ONE resident base model
+(``ProbeSession``) and labels all 8 candidates via cheap LoRA-adapter swaps, and
+PHASE C advances the chain + prunes. A PERSISTENT vLLM inference server
+(``--persistent-inference``, GPU 1) is booted once and reused by every branch so
+each GRPO step skips the ~80-90s cold boot; the per-branch ``uv run rl`` omits its
+own ``[inference]`` block and connects to that server (GPU 0 for the trainer),
+falling back to per-branch inference if the server never becomes ready. All
+GPU/prime-rl execution is Wave 2 — ``--dry-run`` only plans, makes NO network
+calls, and imports nothing heavy. Module-level imports are stdlib + pure
+``math_loop`` modules so ``import math_loop.tap_controller`` works with
+torch/transformers/prime absent.
 """
 
 from __future__ import annotations
@@ -257,13 +263,11 @@ def render_plan(plan: CollectionPlan, args: argparse.Namespace) -> str:
         f"=> {plan.total_trajectories} trajectories total"
     )
     lines.append(f"history window: last {HISTORY_WINDOW} applied updates")
-    if plan.worker_gpus:
-        lines.append(
-            f"dispatch: GPU 0 = main chain; branch workers = GPUs {plan.worker_gpus} "
-            f"(ProcessPoolExecutor, CUDA_VISIBLE_DEVICES-pinned)"
-        )
-    else:
-        lines.append("dispatch: serial (gpu-count<=1; no worker GPUs)")
+    lines.append(
+        "dispatch: GPU 1 = persistent vLLM inference server (booted once, reused by "
+        "every branch); GPU 0 = per-branch trainer (Phase A) + resident probe model "
+        "(Phase B)"
+    )
     lines.append(f"already labeled (resume-safe skip): {len(plan.already_labeled)}/{plan.total_labels}")
     lines.append("")
 
@@ -272,10 +276,9 @@ def render_plan(plan: CollectionPlan, args: argparse.Namespace) -> str:
         for state_index in range(plan.states_per_chain):
             state_id = f"{chain_index}-{state_index}"
             chosen = plan.selected_per_state[state_id]
-            worker = plan.worker_gpus[state_index % len(plan.worker_gpus)] if plan.worker_gpus else 0
             lines.append(
                 f"  state {state_id}: branch candidates 0..{plan.candidates_per_state - 1} "
-                f"-> label all -> apply seeded-random candidate cand_{chosen} (worker GPU {worker})"
+                f"-> label all (1 resident base) -> apply seeded-random candidate cand_{chosen}"
             )
     lines.append("")
 
@@ -431,9 +434,14 @@ def _optimizer_moment_norms(checkpoint: Path) -> tuple[float, float]:
 
 def _write_branch_config(
     config_path: Path, *, output_dir: Path, split_path: Path, model_name: str,
-    renderer: str, run_name: str, args: argparse.Namespace,
+    renderer: str, run_name: str, args: argparse.Namespace, persistent: bool = False,
 ) -> Path:
-    """One prime-rl config for a state-gen warmup or a weights-only branch."""
+    """One prime-rl config for a state-gen warmup or a weights-only branch.
+
+    With ``persistent=True`` the ``[inference]`` block is omitted (deployment is
+    trainer-only) so ``uv run rl`` connects to the long-lived external inference
+    server instead of cold-booting its own vLLM per step.
+    """
     return write_prime_rl_config(
         config_path,
         PrimeRLConfigSpec(
@@ -449,11 +457,68 @@ def _write_branch_config(
             model_name=model_name,
             lora_rank=args.lora_rank,
             learning_rate=args.learning_rate,
-            gpus_per_node=max(args.gpu_count, 2),
+            gpus_per_node=1 if persistent else max(args.gpu_count, 2),
+            num_infer_gpus=0 if persistent else 1,
+            num_train_gpus=1,
+            include_inference=not persistent,
+            inference_gpu_memory_utilization=getattr(args, "inference_gpu_memory_utilization", 0.80),
             run_name=run_name,
             renderer_name=renderer,
         ),
     )
+
+
+def _maybe_start_inference_server(
+    args: argparse.Namespace, *, config_dir: Path, log_dir: Path, train_pool: Path
+):
+    """Start the persistent vLLM inference server (GPU 1) when --persistent-inference.
+
+    Returns ``(persistent, proc, branch_env)``. On readiness timeout it tears the
+    server down and returns ``persistent=False`` so the caller transparently falls
+    back to the per-branch (cold-boot) inference path.
+    """
+    if not getattr(args, "persistent_inference", False):
+        return False, None, None
+    from math_loop.controller import start_background_process, stop_process, wait_for_http_ready
+    from math_loop.prime_rl_config import PrimeRLConfigSpec, write_inference_server_config
+
+    infer_cfg = write_inference_server_config(
+        config_dir / "inference.toml",
+        PrimeRLConfigSpec(
+            output_dir=Path(args.output_dir) / args.run_id,
+            split_path=train_pool,
+            max_steps=1,
+            model_name=args.model_name,
+            lora_rank=args.lora_rank,
+            max_loras=max(args.candidates_per_state, 8),
+            inference_gpu_memory_utilization=args.inference_gpu_memory_utilization,
+        ),
+    )
+    # "uv run rl" -> "uv run inference"
+    infer_cmd = [*shlex.split(args.rl_command)[:-1], "inference", "@", str(infer_cfg)]
+    print(f"[tap] starting persistent inference server (GPU 1): {shlex.join(infer_cmd)}", flush=True)
+    proc = start_background_process(
+        infer_cmd,
+        env_overrides={"CUDA_VISIBLE_DEVICES": "1"},
+        log_path=log_dir / "inference_server.log",
+    )
+    url = "http://127.0.0.1:8000/health"
+    print(f"[tap] waiting for inference server at {url} (timeout {args.inference_ready_timeout}s)...", flush=True)
+    if wait_for_http_ready(url, timeout=args.inference_ready_timeout, proc=proc):
+        print("[tap] persistent inference server ready; branches reuse it (no per-step cold boot)", flush=True)
+        return True, proc, {"CUDA_VISIBLE_DEVICES": "0"}
+    print("[tap] WARNING: inference server not ready; falling back to per-branch inference", flush=True)
+    stop_process(proc)
+    return False, None, None
+
+
+def _stop_inference_server(proc) -> None:
+    if proc is None:
+        return
+    from math_loop.controller import stop_process
+
+    stop_process(proc)
+    print("[tap] stopped persistent inference server", flush=True)
 
 
 def run_controller(args: argparse.Namespace) -> None:
@@ -465,9 +530,7 @@ def run_controller(args: argparse.Namespace) -> None:
         checkpoint_steps, rl_command, run_command, weights_path,
     )
     from math_loop.data import build_probe_sets, prepare_training_splits, read_jsonl, write_jsonl
-    from math_loop.tap_probes import (
-        compute_policy_fingerprint, generic_incremental_kl, teacher_forced_probe_nll,
-    )
+    from math_loop.probe_loss import ProbeSession
 
     output_dir = Path(args.output_dir) / args.run_id
     raw_root = Path(args.raw_root)
@@ -499,6 +562,22 @@ def run_controller(args: argparse.Namespace) -> None:
     for cand in schedule:
         by_state.setdefault((cand.chain_index, cand.state_index), []).append(cand)
 
+    # Persistent inference server (GPU 1): booted lazily and reused across a chain's
+    # branches so each GRPO step skips the ~80-90s vLLM cold boot. It is RESTARTED
+    # (back to the base model) before each chain's state generation -- state-gen
+    # trains from scratch and pushes no weights, so a stale LoRA left by a prior
+    # chain's branches would otherwise pollute the new state-0 rollouts. Branch runs
+    # self-correct (the orchestrator pushes the resumed before-state LoRA on startup),
+    # so they only need the server up. ``branch_env`` pins those rl runs to GPU 0.
+    import atexit
+
+    persistent_requested = bool(getattr(args, "persistent_inference", False))
+    server: dict[str, Any] = {"proc": None}  # mutable so atexit sees the live process
+    persistent = False
+    branch_env: dict[str, str] | None = None
+    if persistent_requested:
+        atexit.register(lambda: _stop_inference_server(server["proc"]))
+
     for chain in range(args.chains):
         history: list[dict[str, Any]] = []
         state_ckpt: Path | None = None
@@ -516,34 +595,43 @@ def run_controller(args: argparse.Namespace) -> None:
                 print(f"[tap] state {state_id}: already complete; resuming at next state", flush=True)
                 continue
 
+            # Manage the persistent inference server for this state: restart it to the
+            # base model before a state generation, otherwise just ensure it is up.
+            if persistent_requested:
+                if state_ckpt is None and server["proc"] is not None:
+                    _stop_inference_server(server["proc"])
+                    server["proc"] = None
+                if server["proc"] is None:
+                    persistent, server["proc"], branch_env = _maybe_start_inference_server(
+                        args, config_dir=config_dir, log_dir=log_dir,
+                        train_pool=Path(training.train_pool),
+                    )
+                    if server["proc"] is None:
+                        persistent_requested = False  # start failed -> per-branch fallback
+
             if state_ckpt is None:
                 state_out = output_dir / "states" / f"chain_{chain}"
                 state_cfg = _write_branch_config(
                     config_dir / "states" / f"chain_{chain}.toml",
                     output_dir=state_out, split_path=Path(training.train_pool),
                     model_name=args.model_name, renderer="auto",
-                    run_name=f"tap-states-{chain}", args=args,
+                    run_name=f"tap-states-{chain}", args=args, persistent=persistent,
                 )
                 if not checkpoint_steps(state_out):
                     print(f"[tap] generating initial state for chain {chain}...", flush=True)
                     run_command(rl_command(args, state_cfg),
-                                log_path=log_dir / "states" / f"chain_{chain}.log")
+                                log_path=log_dir / "states" / f"chain_{chain}.log",
+                                env_overrides=branch_env)
                 steps = checkpoint_steps(state_out)
                 if not steps:
                     raise RuntimeError(f"state generation produced no checkpoint under {state_out}")
                 state_ckpt = weights_path(state_out, max(steps))
             print(f"[tap] state {state_id}: before-state checkpoint {state_ckpt}", flush=True)
 
-            matched_before = teacher_forced_probe_nll(state_ckpt, probes.matched)
-            global_before = teacher_forced_probe_nll(state_ckpt, probes.global_probe)
-            generic_before = 0.0
-            fingerprint = compute_policy_fingerprint(state_ckpt, probes.fingerprint)
-            probe_before = {
-                "matched_probe_nll": matched_before,
-                "global_probe_nll": global_before,
-                "generic_kl": generic_before,
-            }
-
+            # === PHASE A: branch subprocesses (NO resident probe model; both GPUs
+            # free for prime-rl). Collect each candidate's branch checkpoint +
+            # rollouts. Defer ALL branch-weight pruning to Phase C so the probe pass
+            # can read every adapter; only the bulky trainer checkpoints prune here.
             before_d = branch.before_dir(raw_root, state_id)
             before_d.mkdir(parents=True, exist_ok=True)
             hashes = branch.compute_before_state_hashes(state_ckpt)
@@ -552,11 +640,15 @@ def run_controller(args: argparse.Namespace) -> None:
             selected = select_main_chain_candidate(
                 chain, state_index, args.candidates_per_state, args.seed
             )
-            branch_ckpts: dict[int, Path] = {}
             previous_state_ckpt = state_ckpt
-            for cand in by_state[(chain, state_index)]:
+            state_candidates = by_state[(chain, state_index)]
+            branch_ckpts: dict[int, Path] = {}
+            rollouts_by_k: dict[int, list[dict[str, Any]]] = {}
+            prompt_rows_by_k: dict[int, list[dict[str, Any]]] = {}
+            for cand in state_candidates:
                 k = cand.candidate_index
                 prompt_rows = [by_id[pid] for pid in cand.prompt_ids if pid in by_id]
+                prompt_rows_by_k[k] = prompt_rows
                 branch_out = output_dir / "branches" / f"state_{state_id}" / f"cand_{k}"
                 branch_split = branch_out / "candidate_prompts.jsonl"
                 write_jsonl(branch_split, prompt_rows)
@@ -564,39 +656,64 @@ def run_controller(args: argparse.Namespace) -> None:
                     config_dir / "branches" / f"{state_id}_cand_{k}.toml",
                     output_dir=branch_out, split_path=branch_split,
                     model_name=str(state_ckpt), renderer="default",
-                    run_name=f"tap-{cand.candidate_id}", args=args,
+                    run_name=f"tap-{cand.candidate_id}", args=args, persistent=persistent,
                 )
                 print(f"[tap] branch {cand.candidate_id} (weights-only from {state_ckpt})", flush=True)
                 cleanup_cuda_if_available()
                 run_command(rl_command(args, branch_cfg),
-                            log_path=log_dir / "branches" / f"{cand.candidate_id}.log")
+                            log_path=log_dir / "branches" / f"{cand.candidate_id}.log",
+                            env_overrides=branch_env)
                 bsteps = checkpoint_steps(branch_out)
-                branch_ckpt = weights_path(branch_out, max(bsteps) if bsteps else 1)
-
-                rollouts = read_rollouts(branch_out, cand.candidate_id)
-                matched_after = teacher_forced_probe_nll(branch_ckpt, probes.matched)
-                global_after = teacher_forced_probe_nll(branch_ckpt, probes.global_probe)
-                generic_after = generic_incremental_kl(state_ckpt, branch_ckpt, probes.generic_drift)
-                grad_sketch = branch.compute_lora_gradient_sketch(branch_ckpt, prompt_rows)
-                branch.write_candidate_artifacts(
-                    branch.candidate_dir(raw_root, state_id, k),
-                    rollouts=rollouts,
-                    probe_before=probe_before,
-                    probe_after={
-                        "matched_probe_nll": matched_after,
-                        "global_probe_nll": global_after,
-                        "generic_kl": generic_after,
-                    },
-                    grad_sketch=grad_sketch,
-                )
-                branch_ckpts[k] = branch_ckpt
-                print(f"[tap] labeled {cand.candidate_id} ({len(rollouts)} rollouts)", flush=True)
+                branch_ckpts[k] = weights_path(branch_out, max(bsteps) if bsteps else 1)
+                rollouts_by_k[k] = read_rollouts(branch_out, cand.candidate_id)
                 if prune_prime_rl_checkpoints(branch_out, output_dir):
                     print(f"[tap] pruned branch trainer checkpoints for {cand.candidate_id}", flush=True)
-                cleanup_cuda_if_available()
-                if k != selected and prune_checkpoint_weights(branch_ckpt, output_dir):
-                    print(f"[tap] pruned non-selected branch weights for {cand.candidate_id}", flush=True)
 
+            # === PHASE B: probe pass with ONE resident base. The state adapter is
+            # loaded once for the before-probes + fingerprint + cached generic-KL
+            # base side (identical across the state's candidates); each candidate's
+            # after-probes/KL/grad-sketch reuse the resident base via adapter swaps.
+            session = ProbeSession(
+                model_name=args.model_name, device="cuda:0",
+                dtype="bfloat16", max_length=args.seq_len,
+            )
+            try:
+                session.use_adapter(state_ckpt)
+                matched_before = session.probe_nll(probes.matched, batch_size=args.probe_batch_size)
+                global_before = session.probe_nll(probes.global_probe, batch_size=args.probe_batch_size)
+                generic_before = 0.0
+                fingerprint = session.fingerprint(probes.fingerprint)
+                generic_base_cache = session.logits_for_generic(probes.generic_drift)
+                probe_before = {
+                    "matched_probe_nll": matched_before,
+                    "global_probe_nll": global_before,
+                    "generic_kl": generic_before,
+                }
+                for cand in state_candidates:
+                    k = cand.candidate_index
+                    session.use_adapter(branch_ckpts[k])
+                    matched_after = session.probe_nll(probes.matched, batch_size=args.probe_batch_size)
+                    global_after = session.probe_nll(probes.global_probe, batch_size=args.probe_batch_size)
+                    generic_after = session.sequence_kl_vs(generic_base_cache)
+                    grad_sketch = session.grad_sketch(prompt_rows_by_k[k])
+                    rollouts = rollouts_by_k.get(k, [])
+                    branch.write_candidate_artifacts(
+                        branch.candidate_dir(raw_root, state_id, k),
+                        rollouts=rollouts,
+                        probe_before=probe_before,
+                        probe_after={
+                            "matched_probe_nll": matched_after,
+                            "global_probe_nll": global_after,
+                            "generic_kl": generic_after,
+                        },
+                        grad_sketch=grad_sketch,
+                    )
+                    print(f"[tap] labeled {cand.candidate_id} ({len(rollouts)} rollouts)", flush=True)
+            finally:
+                session.close()
+                cleanup_cuda_if_available()
+
+            # === PHASE C: state.json + seeded-random advance + now-safe pruning.
             adam_first, adam_second = _optimizer_moment_norms(state_ckpt)
             state_json = {
                 "state_id": state_id,
@@ -620,6 +737,12 @@ def run_controller(args: argparse.Namespace) -> None:
             state_dir.mkdir(parents=True, exist_ok=True)
             (state_dir / "state.json").write_text(json.dumps(state_json, sort_keys=True), encoding="utf-8")
 
+            # Prune non-selected branch weights now that the probe pass is done
+            # (deferred from Phase A so every adapter was readable during probing).
+            for k, branch_ckpt in branch_ckpts.items():
+                if k != selected and prune_checkpoint_weights(branch_ckpt, output_dir):
+                    print(f"[tap] pruned non-selected branch weights for {state_id}-{k}", flush=True)
+
             # Advance the main chain with the SEEDED-RANDOM candidate (spec).
             state_ckpt = branch_ckpts.get(selected, state_ckpt)
             if state_ckpt != previous_state_ckpt and prune_checkpoint_weights(previous_state_ckpt, output_dir):
@@ -639,6 +762,7 @@ def run_controller(args: argparse.Namespace) -> None:
         if state_ckpt is not None and prune_checkpoint_weights(state_ckpt, output_dir):
             print(f"[tap] pruned final checkpoint weights for chain {chain}", flush=True)
 
+    _stop_inference_server(server["proc"])
     print(f"[tap] collection complete; raw artifacts under {raw_root}", flush=True)
 
 
@@ -665,6 +789,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grpo-beta", type=float, default=0.04)
     parser.add_argument("--seq-len", type=int, default=4096)
     parser.add_argument("--max-completion-tokens", type=int, default=192)
+    parser.add_argument("--probe-batch-size", type=int, default=8,
+                        help="batch size for teacher-forced probe NLL forwards (Phase B)")
+    parser.add_argument("--persistent-inference", action=argparse.BooleanOptionalAction, default=True,
+                        help="reuse ONE vLLM inference server across all branches "
+                             "(skips the ~80-90s per-step cold boot); falls back to "
+                             "per-branch inference if the server is unreachable")
+    parser.add_argument("--inference-gpu-memory-utilization", type=float, default=0.80)
+    parser.add_argument("--inference-ready-timeout", type=float, default=1800.0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.raw_root is None:

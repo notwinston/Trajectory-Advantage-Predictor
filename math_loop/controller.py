@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 
 from math_loop.data import prepare_training_splits, read_jsonl, write_jsonl
@@ -21,11 +23,25 @@ from math_loop.schedule import CandidateBatch, build_candidate_schedule
 CONTROLLER_VERSION = "fresh-branch-weights-v1"
 
 
-def run_command(command: list[str], *, dry_run: bool = False, log_path: Path | None = None) -> None:
+def _proc_env(env_overrides: dict[str, str] | None) -> dict[str, str] | None:
+    """Merge ``env_overrides`` over the current environment (None = inherit)."""
+    if not env_overrides:
+        return None
+    return {**os.environ, **env_overrides}
+
+
+def run_command(
+    command: list[str],
+    *,
+    dry_run: bool = False,
+    log_path: Path | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> None:
     rendered = shlex.join(command)
     if dry_run:
         print(rendered)
         return
+    proc_env = _proc_env(env_overrides)
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as log:
@@ -35,6 +51,7 @@ def run_command(command: list[str], *, dry_run: bool = False, log_path: Path | N
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=proc_env,
             )
             assert process.stdout is not None
             for line in process.stdout:
@@ -44,7 +61,67 @@ def run_command(command: list[str], *, dry_run: bool = False, log_path: Path | N
         if returncode:
             raise subprocess.CalledProcessError(returncode, command)
         return
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, env=proc_env)
+
+
+def start_background_process(
+    command: list[str], *, env_overrides: dict[str, str] | None = None, log_path: Path | None = None
+) -> subprocess.Popen:
+    """Launch a detached, non-blocking process (e.g. the persistent inference server)."""
+    stdout = stderr = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = log_path.open("a", encoding="utf-8")
+        handle.write(f"$ {shlex.join(command)}\n")
+        handle.flush()
+        stdout = stderr = handle
+    return subprocess.Popen(command, stdout=stdout, stderr=stderr, env=_proc_env(env_overrides))
+
+
+def wait_for_http_ready(
+    url: str,
+    *,
+    timeout: float = 1800.0,
+    interval: float = 5.0,
+    proc: subprocess.Popen | None = None,
+) -> bool:
+    """Poll ``url`` until it returns any HTTP response, the process dies, or timeout.
+
+    Used to wait for the vLLM OpenAI server's ``/health`` endpoint. Returns True on
+    ready, False on timeout or early process exit (so the caller can fall back).
+    """
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False  # server process exited before becoming ready
+        try:
+            with urllib.request.urlopen(url, timeout=10.0) as resp:
+                if 200 <= getattr(resp, "status", 200) < 500:
+                    return True
+        except urllib.error.HTTPError:
+            return True  # reachable (any HTTP status means the server is up)
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        time.sleep(interval)
+    return False
+
+
+def stop_process(proc: subprocess.Popen | None, *, timeout: float = 30.0) -> None:
+    """Best-effort terminate -> kill of a background process."""
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def checkpoint_steps(output_dir: Path) -> list[int]:

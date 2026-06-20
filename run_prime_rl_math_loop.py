@@ -512,6 +512,8 @@ def build_collection_command(args: argparse.Namespace) -> list[str]:
         "--grpo-beta", str(args.grpo_beta),
         "--seq-len", str(args.seq_len),
         "--max-completion-tokens", str(args.max_completion_tokens),
+        "--probe-batch-size", str(args.probe_batch_size),
+        ("--persistent-inference" if args.persistent_inference else "--no-persistent-inference"),
     ]
     featurize = [
         "uv", "run", "python", "-m", "math_loop.features",
@@ -798,6 +800,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grpo-beta", type=float, default=0.04)
     parser.add_argument("--seq-len", type=int, default=4096)
     parser.add_argument("--max-completion-tokens", type=int, default=768)
+    parser.add_argument("--probe-batch-size", type=int, default=8,
+                        help="batch size for teacher-forced probe NLL forwards (Phase B)")
+    parser.add_argument("--persistent-inference", action=argparse.BooleanOptionalAction, default=True,
+                        help="reuse ONE vLLM inference server across branches (skip per-step cold boot)")
     # Downloaded artifacts land at <output-dir>/tap/<run-id>/parquet, so the
     # default of "outputs" makes the canonical path outputs/tap/<run-id>/parquet.
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))

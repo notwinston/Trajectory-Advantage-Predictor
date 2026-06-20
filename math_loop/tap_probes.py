@@ -127,6 +127,59 @@ def percentiles(values: Sequence[float], points: Sequence[float] = (10, 50, 90))
     return out
 
 
+# --- vectorized GPU equivalents of the pure-Python aggregators --------------
+# These produce results numerically equal (to fp32 tolerance) to the stdlib
+# helpers above, but run as torch reductions over the [T, V] logit tensors
+# instead of `.tolist()` + Python loops over the 151k-vocab. Torch is imported
+# inside the body so the module stays CPU-importable.
+
+def kl_mean_vectorized(base_logits: Any, branch_logits: Any) -> float:
+    """Mean per-token KL(softmax(base) || softmax(branch)) over a [T, V] pair.
+
+    Vectorized equivalent of averaging :func:`kl_divergence` over rows (matches
+    :func:`sequence_kl`, i.e. every position of the supplied logits).
+    """
+    import torch.nn.functional as F
+
+    base_logp = F.log_softmax(base_logits.float(), dim=-1)
+    branch_logp = F.log_softmax(branch_logits.float(), dim=-1)
+    base_p = base_logp.exp()
+    kl = (base_p * (base_logp - branch_logp)).sum(dim=-1)  # [T]
+    if kl.numel() == 0:
+        return 0.0
+    return float(kl.mean().item())
+
+
+def nll_mean_vectorized(step_logits: Any, target_ids: Sequence[int]) -> float:
+    """Teacher-forced NLL (nats/token) — vectorized :func:`nll_from_logits_and_targets`."""
+    import torch
+    import torch.nn.functional as F
+
+    n = min(int(step_logits.shape[0]), len(target_ids))
+    if n == 0:
+        return 0.0
+    logp = F.log_softmax(step_logits[:n].float(), dim=-1)
+    tgt = torch.as_tensor(list(target_ids[:n]), dtype=torch.long, device=logp.device)
+    vocab = logp.shape[-1]
+    valid = (tgt >= 0) & (tgt < vocab)
+    if not bool(valid.any()):
+        return 0.0
+    rows = torch.arange(n, device=logp.device)[valid]
+    sel = logp[rows, tgt[valid]]
+    return float((-sel).mean().item())
+
+
+def entropy_mean_vectorized(step_logits: Any) -> float:
+    """Mean per-token entropy (nats) — vectorized mean of :func:`sequence_entropy`."""
+    import torch.nn.functional as F
+
+    if int(step_logits.shape[0]) == 0:
+        return 0.0
+    logp = F.log_softmax(step_logits.float(), dim=-1)
+    ent = -(logp.exp() * logp).sum(dim=-1)  # [T]
+    return float(ent.mean().item())
+
+
 # --- model-driven runners (Wave 2; torch deferred) --------------------------
 
 def teacher_forced_probe_nll(
@@ -137,11 +190,14 @@ def teacher_forced_probe_nll(
     device: str = "cuda",
     dtype: str = "bfloat16",
     max_length: int = 4096,
+    batch_size: int = 8,
 ) -> float:
     """Teacher-forced NLL (nats/non-pad token) over ``probe_rows`` on the GPU pod.
 
     Thin wrapper over :func:`math_loop.probe_loss.compute_probe_loss` writing the
     rows to a temporary split. Torch lives entirely inside ``compute_probe_loss``.
+    ``batch_size`` pads/masks within a batch (token-weighted mean is unchanged) so
+    a 16-row probe costs ~2 forward passes instead of 16.
     """
     import json
     import os
@@ -158,6 +214,7 @@ def teacher_forced_probe_nll(
             checkpoint,
             split_path,
             model_name=model_name,
+            batch_size=batch_size,
             max_length=max_length,
             device=device,
             dtype=dtype,
@@ -210,9 +267,7 @@ def generic_incremental_kl(
                 )
                 base_out = base_model(gen)
                 branch_out = branch_model(gen)
-            base_logits = base_out.logits[0].float().tolist()
-            branch_logits = branch_out.logits[0].float().tolist()
-            kls.append(sequence_kl(base_logits, branch_logits))
+                kls.append(kl_mean_vectorized(base_out.logits[0], branch_out.logits[0]))
             del enc, gen, base_out, branch_out
         return sum(kls) / max(len(kls), 1)
     finally:
@@ -254,13 +309,11 @@ def compute_policy_fingerprint(
             input_tensor = torch.tensor([full_ids[:max_length]], device=device)
             with torch.no_grad():
                 logits = model(input_tensor).logits[0].float()
-            # next-token logits aligned to the target positions
-            start = max(len(prompt_ids) - 1, 0)
-            step_logits = logits[start : start + len(target_ids)].tolist()
-            nll_values.append(nll_from_logits_and_targets(step_logits, target_ids))
-            entropy_values.append(
-                sum(sequence_entropy(step_logits)) / max(len(step_logits), 1)
-            )
+                # next-token logits aligned to the target positions
+                start = max(len(prompt_ids) - 1, 0)
+                step_logits = logits[start : start + len(target_ids)]
+                nll_values.append(nll_mean_vectorized(step_logits, target_ids))
+                entropy_values.append(entropy_mean_vectorized(step_logits))
             del input_tensor, logits
         return assemble_policy_fingerprint(nll_values, entropy_values)
     finally:

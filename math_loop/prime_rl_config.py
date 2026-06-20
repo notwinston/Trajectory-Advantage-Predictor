@@ -30,6 +30,13 @@ class PrimeRLConfigSpec:
     run_name: str = "qwen3-math-loop"
     system_prompt: str = NON_THINKING_SYSTEM_PROMPT
     renderer_name: str = "auto"
+    # Persistent-inference-server knobs. ``include_inference=False`` omits the
+    # ``[inference]`` block so ``uv run rl`` connects to an EXTERNAL vLLM server
+    # (started once via ``uv run inference``) instead of booting its own per step.
+    include_inference: bool = True
+    enforce_eager: bool = True
+    max_loras: int = 8
+    inference_gpu_memory_utilization: float = 0.80
 
 
 def _toml_str(value: str | Path) -> str:
@@ -40,10 +47,51 @@ def _toml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+def render_inference_server_config(spec: PrimeRLConfigSpec) -> str:
+    """Standalone ``inference.toml`` for a PERSISTENT ``uv run inference`` server.
+
+    Booted once and reused across every branch/state-gen run (the orchestrator
+    re-syncs the resumed before-state LoRA on startup), eliminating the ~80-90s
+    vLLM cold-boot that ``uv run rl`` otherwise pays per GRPO step. Mirrors
+    prime-rl's own multi-run integration ``inference.toml`` (enable_lora +
+    max_lora_rank + max_loras + gpu_memory_utilization), with enforce_eager on to
+    skip CUDA-graph capture (never amortized for single-step branches).
+    """
+    return f"""enable_lora = true
+max_lora_rank = {spec.lora_rank}
+max_loras = {spec.max_loras}
+gpu_memory_utilization = {spec.inference_gpu_memory_utilization}
+
+[model]
+name = {_toml_str(spec.model_name)}
+enforce_eager = {_toml_bool(spec.enforce_eager)}
+"""
+
+
+def write_inference_server_config(path: Path, spec: PrimeRLConfigSpec) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_inference_server_config(spec), encoding="utf-8")
+    return path
+
+
 def render_prime_rl_config(spec: PrimeRLConfigSpec) -> str:
     """Render a complete prime-rl config for either state generation or branch update."""
 
     lora_name = f"qwen3-math-r{spec.lora_rank}"
+    if spec.include_inference:
+        # Self-contained run: ``uv run rl`` boots its own inference server.
+        inference_block = f"""
+[inference]
+enable_lora = true
+gpu_memory_utilization = {spec.inference_gpu_memory_utilization}
+
+[inference.model]
+enforce_eager = {_toml_bool(spec.enforce_eager)}
+"""
+    else:
+        # Persistent-server mode: no [inference] block -> ``uv run rl`` connects to
+        # the external server at the orchestrator's default base_url (localhost:8000).
+        inference_block = ""
     return f"""max_steps = {spec.max_steps}
 seq_len = {spec.seq_len}
 output_dir = {_toml_str(spec.output_dir)}
@@ -119,11 +167,7 @@ name = "math-loop"
 group_size = {spec.group_size}
 num_workers = 1
 args = {{ split_path = {_toml_str(spec.split_path)}, system_prompt = {_toml_str(spec.system_prompt)} }}
-
-[inference]
-enable_lora = true
-gpu_memory_utilization = 0.80
-
+{inference_block}
 [orchestrator.renderer]
 name = {_toml_str(spec.renderer_name)}
 """
