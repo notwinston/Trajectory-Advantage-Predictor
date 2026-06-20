@@ -47,6 +47,35 @@ def monotone_vector(names: Sequence[str]) -> list[int]:
     return [FEATURE_MONOTONICITY.get(n, 0) for n in names]
 
 
+# Domain-INVARIANT "mechanism" features (fractions / variances / similarity) — the
+# subset expected to transfer across domains. Excludes raw, domain-scaled absolutes
+# (length, raw log-prob/entropy/surprisal quantiles) per the transfer analysis.
+MECHANISM_KEYS: tuple[str, ...] = (
+    "reward_mean", "reward_std", "pass_rate", "group_passrate_mean", "group_passrate_std",
+    "frac_nondegenerate", "frac_all_correct", "frac_all_wrong", "redundancy_mean",
+    "target_similarity", "n_groups",
+)
+
+
+def _standardize_by_group(X: np.ndarray, groups: Sequence) -> np.ndarray:
+    """Z-score each column WITHIN each group (domain) so GBDT thresholds become
+    domain-relative -> far better cross-domain transfer (per the analysis)."""
+
+    X = np.array(X, float)
+    g = np.asarray(groups)
+    for grp in np.unique(g):
+        idx = g == grp
+        sub = X[idx]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mu = np.nanmean(np.where(np.isfinite(sub), sub, np.nan), axis=0)
+            sd = np.nanstd(np.where(np.isfinite(sub), sub, np.nan), axis=0)
+        mu = np.where(np.isfinite(mu), mu, 0.0)
+        sd = np.where(np.isfinite(sd) & (sd > 1e-8), sd, 1.0)
+        X[idx] = (sub - mu) / sd
+    return X
+
+
 def load_labels(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with Path(path).open("r", encoding="utf-8") as h:
@@ -68,10 +97,11 @@ def build_xy(
     with_context: bool = True,
     label: str = "acc",
     weights: UtilityWeights | None = None,
+    standardize_domains: bool = False,
 ) -> dict[str, Any]:
-    """Vectorize label rows. Returns X, y, anchor groups, chain ids, names."""
+    """Vectorize label rows. Returns X, y, anchor groups, chain ids, domains, names."""
 
-    xs, ys, anchors, chains = [], [], [], []
+    xs, ys, anchors, chains, domains = [], [], [], [], []
     for row in rows:
         y = target_from_row(row, mode=label, weights=weights)
         if y is None:
@@ -85,14 +115,19 @@ def build_xy(
         ys.append(y)
         anchors.append(_anchor_group(row))
         chains.append(row.get("chain_id", 0))
+        domains.append(row.get("domain", "?"))
     if not xs:
         raise ValueError("no labelled rows with a usable target")
     names = list(feature_keys) + (list(CONTEXT_KEYS) if with_context else [])
+    X = np.asarray(xs, float)
+    if standardize_domains:  # competence/domain-relative features -> better transfer
+        X = _standardize_by_group(X, domains)
     return {
-        "X": np.asarray(xs, float),
+        "X": X,
         "y": np.asarray(ys, float),
         "anchors": anchors,
         "chains": chains,
+        "domains": domains,
         "names": names,
     }
 
