@@ -112,6 +112,39 @@ def build_battery_command(args: argparse.Namespace) -> list[str]:
     return ["bash", "-lc", " && ".join(pieces)]
 
 
+def build_loop_command(args: argparse.Namespace) -> list[str]:
+    """Predictor-in-the-loop curriculum climb (tap.loop): single process, no sharding."""
+    out = REMOTE_WORK + "/outputs"
+    cmd = ["python", "-m", "tap.loop",
+           "--data-dir", REMOTE_WORK + "/data",
+           "--model-name", args.model_name,
+           "--domain", args.domain,
+           "--grpo-steps", str(args.grpo_steps),
+           "--group-size", str(args.group_size),
+           "--temperature", str(args.temperature),
+           "--max-new-tokens", str(args.max_new_tokens),
+           "--micro-batch", str(args.micro_batch),
+           "--eval-batch", str(args.eval_batch),
+           "--gen-batch", str(args.gen_batch),
+           "--probe-size", str(args.probe_size),
+           "--cohort-size", str(args.cohort_size),
+           "--pool-size", str(args.pool_size),
+           "--steps", str(args.steps),
+           "--candidates-per-step", str(args.candidates_per_step),
+           "--random-seeds", str(args.random_seeds),
+           "--lr", str(args.lr),
+           "--seed", str(args.seed),
+           "--output", out + "/loop.jsonl"]
+    if not args.acc_eval:
+        cmd += ["--no-acc-eval"]
+    env = [f"cd {shlex.quote(REMOTE_WORK)}", ". .venv/bin/activate",
+           'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"',
+           f"export PYTHONPATH={shlex.quote(REMOTE_REPO)}:${{PYTHONPATH:-}}",
+           f"export HF_HOME={shlex.quote(REMOTE_WORK + '/hf_cache')}",
+           f"mkdir -p {shlex.quote(out)}"]
+    return ["bash", "-lc", " && ".join(env + [shlex.join(cmd)])]
+
+
 def run_on_pod(args, pod_id, repo_root, output_dir, *, reuse=None) -> None:
     if reuse is not None:  # reuse an existing pod: skip create + bootstrap, just refresh code + run
         dest, port = reuse
@@ -144,8 +177,10 @@ def run_on_pod(args, pod_id, repo_root, output_dir, *, reuse=None) -> None:
         # [t]ap.battery: regex matches the real process but NOT this pkill's own
         # command line, which would otherwise SIGKILL the ssh shell (rc 255).
         base.remote(ssh, dest, ["bash", "-lc", "pkill -9 -f '[t]ap.battery' || true; sleep 3"])
-    print("Running TAP battery...", flush=True)
-    base.remote(ssh, dest, build_battery_command(args), timeout=args.remote_timeout, log=log, stream=True)
+    loop = getattr(args, "loop", False)
+    print(f"Running TAP {'loop' if loop else 'battery'}...", flush=True)
+    builder = build_loop_command if loop else build_battery_command
+    base.remote(ssh, dest, builder(args), timeout=args.remote_timeout, log=log, stream=True)
     print("Downloading outputs...", flush=True)
     base.download_outputs(ssh, dest, output_dir)
 
@@ -184,6 +219,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--seeds", type=int, default=1)
     p.add_argument("--seed", type=int, default=0, help="cohort-generation RNG seed (explicit, avoids --seeds prefix clash)")
     p.add_argument("--max-cohorts", type=int, default=0)
+    # ---- predictor-in-the-loop curriculum climb (tap.loop) ----
+    p.add_argument("--loop", action="store_true",
+                   help="run the closed-loop curriculum climb (tap.loop) instead of the battery")
+    p.add_argument("--steps", type=int, default=20, help="loop: climb steps (cohorts trained on)")
+    p.add_argument("--pool-size", type=int, default=40, help="loop: number of candidate cohorts")
+    p.add_argument("--candidates-per-step", type=int, default=0, help="loop: predictor scoring breadth (0=all)")
+    p.add_argument("--random-seeds", type=int, default=3, help="loop: random-arm repeats")
     p.add_argument("--no-acc-eval", dest="acc_eval", action="store_false",
                    help="NLL-only gate (skip slow greedy accuracy eval)")
     p.set_defaults(acc_eval=True)
@@ -205,7 +247,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         print("Dry run. No pod created.")
         print("bootstrap:\n" + shlex.join(build_bootstrap_command()))
-        print("battery:\n" + shlex.join(build_battery_command(args)))
+        cmd = build_loop_command(args) if args.loop else build_battery_command(args)
+        print(("loop:\n" if args.loop else "battery:\n") + shlex.join(cmd))
         return
     if not args.ssh_key.is_file():
         raise SystemExit(f"SSH key not found: {args.ssh_key}")
