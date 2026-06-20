@@ -203,15 +203,40 @@ def eval_accuracy(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> float
     """Held-out pass-rate. Greedy (deterministic) eval removes sampling noise so
     that lift = real model change, not probe-sampling variance (v1's #1 noise)."""
 
+    import torch
+
+    if not rows:
+        return 0.0
     model.eval()
-    k = 1 if cfg.eval_greedy else cfg.probe_k
-    correct = total = 0
-    for row in rows:
-        _, comps = _sample(model, tok, _question(row), cfg, k, greedy=cfg.eval_greedy)
-        for c in comps:
-            correct += int(_reward(tok.decode(c, skip_special_tokens=True), row, cfg) > 0.5)
-            total += 1
-    return correct / max(total, 1)
+    if not cfg.eval_greedy:  # sampled fallback (rare): per-row
+        correct = total = 0
+        for row in rows:
+            _, comps = _sample(model, tok, _question(row), cfg, cfg.probe_k, greedy=False)
+            for c in comps:
+                correct += int(_reward(tok.decode(c, skip_special_tokens=True), row, cfg) > 0.5)
+                total += 1
+        return correct / max(total, 1)
+    prompts = [_render(tok, _question(r), cfg) for r in rows]
+    eos = tok.eos_token_id
+    old_side = tok.padding_side
+    tok.padding_side = "left"      # left-pad for batched decoder-only generation
+    correct = 0
+    try:
+        for i in range(0, len(rows), cfg.micro_batch):
+            chunk = rows[i:i + cfg.micro_batch]
+            enc = tok(prompts[i:i + cfg.micro_batch], return_tensors="pt", padding=True).to(cfg.device)
+            with torch.no_grad():
+                gen = model.generate(**enc, max_new_tokens=cfg.max_new_tokens, do_sample=False,
+                                     pad_token_id=tok.pad_token_id, eos_token_id=eos)
+            plen = enc.input_ids.shape[1]
+            for j, row in enumerate(chunk):
+                ids = gen[j, plen:].tolist()
+                if eos is not None and eos in ids:
+                    ids = ids[: ids.index(eos) + 1]
+                correct += int(_reward(tok.decode(ids, skip_special_tokens=True), row, cfg) > 0.5)
+    finally:
+        tok.padding_side = old_side
+    return correct / max(len(rows), 1)
 
 
 def eval_nll(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> float:
