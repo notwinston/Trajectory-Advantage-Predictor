@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -459,28 +460,69 @@ def build_collection_command(args: argparse.Namespace) -> list[str]:
     return ["bash", "-lc", " && ".join(pieces)]
 
 
+# Repo paths excluded from the on-pod upload (secrets, caches, large outputs).
+UPLOAD_EXCLUDES = [".git", "outputs", "data/math_loop", ".venv", "pod_id.txt",
+                   "private_key.pem", "public_key.pem"]
+
+
+def rsync_upload_command(ssh: list[str], destination: str, repo_root: Path) -> list[str]:
+    cmd = ["rsync", "-az", "--delete"]
+    for pattern in UPLOAD_EXCLUDES:
+        cmd += ["--exclude", pattern]
+    cmd += ["-e", shlex.join(ssh), f"{repo_root}/", f"{destination}:{REMOTE_REPO}/"]
+    return cmd
+
+
+def tar_upload_commands(ssh: list[str], destination: str, repo_root: Path) -> tuple[list[str], list[str]]:
+    """rsync-free upload: local `tar c` piped into a remote `tar x` over ssh."""
+    local = ["tar", "czf", "-"]
+    for pattern in UPLOAD_EXCLUDES:
+        local += ["--exclude", pattern]
+    local += ["-C", str(repo_root), "."]
+    remote_cmd = [*ssh, destination,
+                  f"mkdir -p {shlex.quote(REMOTE_REPO)} && tar xzf - -C {shlex.quote(REMOTE_REPO)}"]
+    return local, remote_cmd
+
+
+def tar_download_commands(ssh: list[str], destination: str, output_dir: Path) -> tuple[list[str], list[str]]:
+    remote_cmd = [*ssh, destination,
+                  f"tar czf - -C {shlex.quote(REMOTE_WORK + '/outputs')} ."]
+    local = ["tar", "xzf", "-", "-C", str(output_dir)]
+    return remote_cmd, local
+
+
+def _run_pipe(producer: list[str], consumer: list[str], *, timeout: int = 3600) -> None:
+    """Run `producer | consumer`, failing closed if either side errors."""
+    p1 = subprocess.Popen(producer, stdout=subprocess.PIPE)
+    assert p1.stdout is not None
+    p2 = subprocess.Popen(consumer, stdin=p1.stdout)
+    p1.stdout.close()  # allow p1 to get SIGPIPE if p2 exits
+    rc2 = p2.wait(timeout=timeout)
+    rc1 = p1.wait(timeout=timeout)
+    if rc1:
+        raise subprocess.CalledProcessError(rc1, producer)
+    if rc2:
+        raise subprocess.CalledProcessError(rc2, consumer)
+
+
 def upload_repo(ssh: list[str], destination: str, repo_root: Path) -> None:
-    run(
-        [
-            "rsync", "-az", "--delete",
-            "--exclude", ".git",
-            "--exclude", "outputs",
-            "--exclude", "data/math_loop",
-            "--exclude", ".venv",
-            "-e", shlex.join(ssh),
-            f"{repo_root}/", f"{destination}:{REMOTE_REPO}/",
-        ]
-    )
+    if shutil.which("rsync"):
+        run(rsync_upload_command(ssh, destination, repo_root))
+        return
+    producer, consumer = tar_upload_commands(ssh, destination, repo_root)
+    print("[transport] rsync absent; uploading via tar-over-ssh", flush=True)
+    _run_pipe(producer, consumer)
 
 
 def download_outputs(ssh: list[str], destination: str, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "rsync", "-az", "-e", shlex.join(ssh),
-            f"{destination}:{REMOTE_WORK}/outputs/", f"{output_dir}/",
-        ]
-    )
+    if shutil.which("rsync"):
+        run(["rsync", "-az", "-e", shlex.join(ssh),
+             f"{destination}:{REMOTE_WORK}/outputs/", f"{output_dir}/"])
+        return
+    producer, consumer = tar_download_commands(ssh, destination, output_dir)
+    print("[transport] rsync absent; downloading via tar-over-ssh", flush=True)
+    _run_pipe(producer, consumer)
 
 
 def validate_smoke_outputs(output_dir: Path, args: argparse.Namespace) -> None:

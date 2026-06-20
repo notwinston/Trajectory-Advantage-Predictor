@@ -6,49 +6,51 @@ data collection. It covers the **one-time unblock**, the **1xH100 smoke**, the
 
 ---
 
-## ⛔ BLOCKED-ON-USER: `PRIME_API_KEY` is not in this environment
+## ⛔ BLOCKED-ON-USER: the on-pod collection driver (`tap_controller.run_controller`) is a stub
 
-The 1xH100 smoke could **not** run because Prime Intellect is not authenticated
-in this container:
+**The credential is resolved.** A `PRIME_API_KEY` was supplied; the CLI now
+authenticates (`prime whoami` → *winston thov*) and `prime availability list
+--gpu-type H100_80GB --output json` returns a **non-empty** offers array (8 offers;
+4 lambdalabs, incl. a 1×H100 at \$3.29/h). The CPU gate, the launcher hardening,
+and the prime-rl pin all pass. **Do not** write the key into any tracked file —
+it lives only in the environment (`export PRIME_API_KEY=…`).
 
-```
-$ prime availability list --gpu-type H100_80GB --output json
-Error fetching availability page 1: No API key configured. Use command 'prime login' ...
-{ "gpu_resources": [], "total_count": 0, ... }   # empty -> auth failure, not a pass
-```
+**What still blocks the smoke from producing a mini-Parquet:** the real (non
+`--dry-run`) collection driver is not implemented. `math_loop.tap_controller.run_controller`
+raises `SystemExit("tap_controller real run executes on the Wave 2 GPU pod …")`,
+and the per-candidate `_branch_worker` it would dispatch expects pre-generated
+`task["rollouts"]`/`probe_before` — i.e. the on-pod rollout + per-token
+logprob/entropy extraction against the real prime-rl (plan unknowns a/b/c) must be
+built before any labels exist. That file is **read-only in this wave** and the work
+is substantial (not a minimal fix), so it cannot be completed here. Spending on a
+pod now would only re-confirm this known gap, so no pod was provisioned.
 
-`PRIME_API_KEY` is absent from the environment, from `~/.prime` / `~/.config/prime`,
-and from any `.env`; the Claude Docker wrapper only forwards `CLAUDOCKER_*`/OAuth,
-so it never injects a PI key. The CPU integration gate and the launcher hardening
-all pass — the **only** thing missing is the credential.
+### What was verified (so the driver is the only remaining gap)
 
-### To unblock (user action, ~1 minute)
+- **Auth + availability:** PASS (8 offers; 1×H100 lambdalabs \$3.29/h available).
+- **prime-rl pin** `4d361adacc5d4984ffe2c912cc987690ed1aeff7` (current HEAD).
+- **Plan unknown (d) — NOT feature-degradable — CONFIRMED at the pin (from source):**
+  `class AdvantageOutputs` exists in `prime_rl/orchestrator/advantage.py` and
+  `verifiers` is a declared dependency. The pre-flight import
+  (`import verifiers; from prime_rl.orchestrator.advantage import AdvantageOutputs`)
+  will not block once the driver is built.
+- **SSH:** `/workspace/private_key.pem` (chmod 600) `ssh-keygen -y` matches
+  `/workspace/public_key.pem` (comment `prime-intellect`).
 
-Pick ONE:
+### To unblock (developer action)
 
-```bash
-# (a) Export the key into the environment (what the launcher/CLI read):
-export PRIME_API_KEY=<your-prime-intellect-api-key>
-
-# (b) …or store it in the prime CLI config:
-prime config set-api-key        # prompts securely
-# prime login                   # interactive browser OAuth (alternative)
-```
-
-Then confirm auth + the registered SSH key:
-
-```bash
-prime whoami
-prime availability list --gpu-type H100_80GB --output json | jq '.gpu_resources | length'   # must be > 0
-ssh-keygen -y -f /workspace/private_key.pem        # must match /workspace/public_key.pem
-```
-
-The public key `/workspace/public_key.pem` (comment `prime-intellect`) should
-already be registered on the PI account. If a provisioned pod is later
-unreachable over SSH, register that public key in the PI dashboard
-(Settings → SSH keys) and re-run.
-
-After `availability list` returns a non-empty array, run the smoke (below).
+1. Implement the real collection loop in `math_loop/tap_controller.run_controller`
+   (or a driver that composes `build_plan` + `_branch_worker` + `math_loop.features`)
+   so it generates rollouts, computes before/after probes, writes the raw
+   `before/ cand_<k>/ state.json` tree, and advances the main chain. Resolve plan
+   unknowns (a) per-token logprob/entropy exposure, (b) `--ckpt.resume-step` Adam
+   restore, (c) LoRA-grad backward against the pinned prime-rl, using the W1a
+   fallbacks (forward-pass logprobs / weights-only / `grad_unavailable.flag`).
+2. `export PRIME_API_KEY=<key>` in the run environment (never on disk in the repo).
+3. Confirm `prime whoami` and that `prime availability list … | jq '.gpu_resources|length'` > 0.
+4. Run the smoke (Step 2). The hardened launcher will then provision, bootstrap the
+   pinned prime-rl, run the pre-flight import, collect, featurize, download, and
+   validate — tearing the pod down on success, failure, signal, or cost/time breach.
 
 ---
 

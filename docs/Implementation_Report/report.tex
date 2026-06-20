@@ -111,11 +111,16 @@ atexit + SIGINT/SIGTERM + breach teardown reaping by \texttt{tap-v1-smoke-} pref
 and by id; \texttt{-{}-keep-pod} forbidden; \texttt{-{}-gpu-count > 1} and any
 non-\texttt{-{}-smoke} run gated behind \texttt{TAP\_ALLOW\_FULL\_RUN=1}; SSH via the
 provided \texttt{/workspace/private\_key.pem}. \texttt{reap\_pods.py} refuses empty
-or non-\texttt{tap-v1-} prefixes. \textbf{Smoke BLOCKED}: \texttt{prime availability
-list} returns \texttt{No API key configured}; \texttt{PRIME\_API\_KEY} is absent.
-The user must supply it (see \texttt{RUNBOOK.md}). \textbf{Integration finding}:
-\texttt{tap\_controller.run\_controller} stubs real runs; the GPU driver loop must be
-enabled in that read-only file before labels are produced; the launcher fails fast
-and reaps the pod if hit.
+or non-\texttt{tap-v1-} prefixes. \textbf{Credential RESOLVED}: a supplied
+\texttt{PRIME\_API\_KEY} authenticates and \texttt{prime availability list} returns
+a non-empty offers array (8 offers; 1$\times$H100 lambdalabs \$3.29/h). \textbf{Plan
+unknown (d) CONFIRMED at pin} \texttt{4d361ad}: \texttt{class AdvantageOutputs}
+exists and \texttt{verifiers} is a declared dependency. \textbf{Smoke BLOCKED on the
+collection driver}: \texttt{tap\_controller.run\_controller} stubs real runs, and
+\texttt{\_branch\_worker} expects pre-generated rollouts/probes --- the on-pod
+rollout + logprob extraction (unknowns a/b/c) must be built first. That file is
+read-only this wave and the work is substantial, so the smoke cannot produce a
+mini-Parquet here; no pod was provisioned to re-confirm a known gap. See
+\texttt{RUNBOOK.md}.
 
 \end{document}

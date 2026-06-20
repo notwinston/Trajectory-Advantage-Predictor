@@ -147,6 +147,32 @@ class ArgGateTest(unittest.TestCase):
             launcher.validate_args(args)
 
 
+class TransportTest(unittest.TestCase):
+    SSH = ["ssh", "-i", "/workspace/private_key.pem", "-p", "22"]
+
+    def test_rsync_upload_excludes_secrets(self):
+        cmd = launcher.rsync_upload_command(self.SSH, "user@host", Path("/workspace"))
+        self.assertEqual(cmd[0], "rsync")
+        for secret in ("private_key.pem", "public_key.pem", ".git", ".venv", "outputs"):
+            self.assertIn(secret, cmd)
+
+    def test_tar_upload_pipes_and_excludes_secrets(self):
+        producer, consumer = launcher.tar_upload_commands(self.SSH, "user@host", Path("/workspace"))
+        self.assertEqual(producer[:3], ["tar", "czf", "-"])
+        self.assertIn("private_key.pem", producer)
+        self.assertIn("public_key.pem", producer)
+        self.assertEqual(consumer[0], "ssh")
+        self.assertIn("user@host", consumer)
+        self.assertIn("tar xzf - -C", consumer[-1])
+
+    def test_tar_download_pulls_remote_outputs(self):
+        remote_cmd, local = launcher.tar_download_commands(self.SSH, "user@host", Path("/tmp/out"))
+        self.assertEqual(remote_cmd[0], "ssh")
+        self.assertIn("tar czf -", remote_cmd[-1])
+        self.assertEqual(local[:3], ["tar", "xzf", "-"])
+        self.assertEqual(local[-1], "/tmp/out")
+
+
 class DryRunPlanTest(unittest.TestCase):
     def test_dry_run_smoke_plan_advertises_safety(self):
         buf = io.StringIO()

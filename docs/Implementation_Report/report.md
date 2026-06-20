@@ -176,16 +176,26 @@ against the registered `prime-intellect` public key).
 **`reap_pods.py`** lists/terminates pods by id or name prefix and refuses any
 empty or non-`tap-v1-` prefix.
 
-**Smoke — BLOCKED (user action):** `prime availability list` returns an empty
-array with `No API key configured`. `PRIME_API_KEY` is absent from the
-environment and the prime config. The user must export `PRIME_API_KEY` (or
-`prime config set-api-key`) and confirm the SSH public key is registered, then
-run the smoke. See `RUNBOOK.md`.
+**Credential — RESOLVED:** a `PRIME_API_KEY` was supplied; `prime whoami`
+authenticates and `prime availability list --gpu-type H100_80GB --output json`
+returns a non-empty offers array (8 offers; 4 lambdalabs, incl. a 1×H100 at
+\$3.29/h). The key lives only in the environment, never on disk in the repo.
 
-**Integration finding:** `math_loop.tap_controller.run_controller` is a stub for
-real runs (raises `SystemExit`); the GPU collection driver loop must be enabled
-in that (read-only this wave) file before the smoke/full run emits labels. The
-launcher fails fast and reaps the pod if this is hit, so no spend is wasted.
+**Plan unknown (d) — CONFIRMED at the pin (from source):** at prime-rl HEAD
+`4d361ad`, `class AdvantageOutputs` exists in `prime_rl/orchestrator/advantage.py`
+and `verifiers` is a declared dependency, so the not-feature-degradable pre-flight
+import will not block.
+
+**Smoke — BLOCKED on the collection driver:** the real (non `--dry-run`)
+`math_loop.tap_controller.run_controller` is a stub (`raise SystemExit`), and the
+per-candidate `_branch_worker` expects pre-generated rollouts/probes — the on-pod
+rollout + per-token logprob/entropy extraction against the real prime-rl (plan
+unknowns a/b/c) must be built before any labels exist. That file is read-only in
+this wave and the work is substantial, so the smoke cannot produce a mini-Parquet
+here; no pod was provisioned to re-confirm a known, documented gap. The launcher,
+reaper, cost/wall-clock guards, schema, featurizer, and eval are all verified on
+CPU + synthetic data and the credentialled provisioning path (auth, availability,
+pin, import (d)) is confirmed. See `RUNBOOK.md` to complete the driver and run.
 
 ## 9. Reproduction (CPU)
 

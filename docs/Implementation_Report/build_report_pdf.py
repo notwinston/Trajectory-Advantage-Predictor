@@ -158,11 +158,15 @@ def build() -> Path:
         "the provided /workspace/private_key.pem. reap_pods.py refuses empty or non-tap-v1- "
         "prefixes.", body))
     flow.append(Paragraph(
-        "Smoke BLOCKED: prime availability list returns 'No API key configured'; PRIME_API_KEY is "
-        "absent. The user must supply it (RUNBOOK.md). Integration finding: "
-        "tap_controller.run_controller stubs real runs; the GPU driver loop must be enabled in "
-        "that read-only file before labels are produced; the launcher fails fast and reaps the pod "
-        "if hit.", body))
+        "Credential RESOLVED: a supplied PRIME_API_KEY authenticates (prime whoami) and prime "
+        "availability list returns a non-empty offers array (8 offers; 1xH100 lambdalabs $3.29/h). "
+        "Plan unknown (d) CONFIRMED at pin 4d361ad from source: class AdvantageOutputs exists in "
+        "prime_rl/orchestrator/advantage.py and verifiers is a declared dependency. Smoke BLOCKED "
+        "on the collection driver: tap_controller.run_controller stubs real runs and _branch_worker "
+        "expects pre-generated rollouts/probes &mdash; the on-pod rollout + per-token logprob/"
+        "entropy extraction (unknowns a/b/c) must be built first. That file is read-only this wave "
+        "and the work is substantial, so the smoke cannot produce a mini-Parquet here; no pod was "
+        "provisioned to re-confirm a known, documented gap. See RUNBOOK.md.", body))
 
     doc.build(flow)
     return OUT
