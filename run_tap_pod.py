@@ -132,6 +132,7 @@ def build_loop_command(args: argparse.Namespace) -> list[str]:
            "--steps", str(args.steps),
            "--candidates-per-step", str(args.candidates_per_step),
            "--random-seeds", str(args.random_seeds),
+           "--acc-every", str(args.acc_every),
            "--lr", str(args.lr),
            "--seed", str(args.seed),
            "--output", out + "/loop.jsonl"]
@@ -176,7 +177,7 @@ def run_on_pod(args, pod_id, repo_root, output_dir, *, reuse=None) -> None:
     else:  # free the GPU from any prior battery before relaunching
         # [t]ap.battery: regex matches the real process but NOT this pkill's own
         # command line, which would otherwise SIGKILL the ssh shell (rc 255).
-        base.remote(ssh, dest, ["bash", "-lc", "pkill -9 -f '[t]ap.battery' || true; sleep 3"])
+        base.remote(ssh, dest, ["bash", "-lc", "pkill -9 -f '[t]ap.battery' || true; pkill -9 -f '[t]ap.loop' || true; sleep 3"])
     loop = getattr(args, "loop", False)
     print(f"Running TAP {'loop' if loop else 'battery'}...", flush=True)
     builder = build_loop_command if loop else build_battery_command
@@ -226,6 +227,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--pool-size", type=int, default=40, help="loop: number of candidate cohorts")
     p.add_argument("--candidates-per-step", type=int, default=0, help="loop: predictor scoring breadth (0=all)")
     p.add_argument("--random-seeds", type=int, default=3, help="loop: random-arm repeats")
+    p.add_argument("--acc-every", type=int, default=3, help="loop: greedy accuracy eval cadence (nll is every step)")
     p.add_argument("--no-acc-eval", dest="acc_eval", action="store_false",
                    help="NLL-only gate (skip slow greedy accuracy eval)")
     p.set_defaults(acc_eval=True)
