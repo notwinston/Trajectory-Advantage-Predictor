@@ -45,7 +45,8 @@ def build_bootstrap_command() -> list[str]:
     script = f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt_retry() {{ for i in $(seq 1 60); do if apt-get -o DPkg::Lock::Timeout=600 "$@"; then return 0; fi; echo "apt retry $i"; sleep 10; done; return 1; }}
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+apt_retry() {{ for i in $(seq 1 60); do if $SUDO apt-get -o DPkg::Lock::Timeout=600 "$@"; then return 0; fi; echo "apt retry $i"; sleep 10; done; return 1; }}
 apt_retry update
 apt_retry install -y --no-install-recommends ca-certificates curl git rsync python3-venv
 command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
