@@ -2,9 +2,12 @@
 # ============================================================================
 # TAP label generator — run on YOUR Prime Intellect account to mint labels.
 #
-# It spins up a GPU pod on your account, runs the accuracy-lift battery
-# (Qwen3-1.7B), downloads the labels to ./outputs/, terminates the pod, and
-# repeats with the next seed. Leave it running to rack up labels; Ctrl-C stops.
+# It spins up a GPU pod on your account and runs the accuracy-lift battery
+# (Qwen3-1.7B) in QUALITY mode: every cohort is measured with 3 training seeds
+# and a 128-item greedy probe, so each lift label is denoised (not just
+# plentiful). Labels download to ./outputs/, the pod terminates, and it repeats
+# with fresh cohorts. Quality > quantity — fewer labels, but clean ones.
+# Leave it running; Ctrl-C stops.
 #
 # ---- one-time setup (you handle this) -------------------------------------
 #   pip install prime-cli            # or: uv tool install prime-cli
@@ -18,7 +21,8 @@
 # ---- usage ----------------------------------------------------------------
 #   scripts/friend_run.sh <your_name> [domain] [gpu_count]
 #     domain    = math | code | science | mmlu     (default: math)
-#     gpu_count = GPUs per pod (default 1; N => N parallel shards => ~Nx faster)
+#     gpu_count = GPUs per pod (default 1; N => N parallel shards => ~Nx faster).
+#                 Quality mode is ~6x heavier per label, so pass 2-8 if you can.
 #
 #   examples:
 #     scripts/friend_run.sh alice math
@@ -57,8 +61,8 @@ while true; do
         --provider "$PROVIDER" --gpu-type "$GT" --gpu-count "$GC" --shard-total "$GC" \
         --domain "$DOMAIN" --model-name Qwen/Qwen3-1.7B \
         --cohort-size 4 --group-size 8 --temperature 1.2 --max-new-tokens "$MAXTOK" \
-        --grpo-steps 15 --lr 3e-4 --probe-size 64 --probe-k 4 --anchors-per-chain 1 \
-        --n-random 40 --seeds 3 --seed "$SEED" \
+        --grpo-steps 15 --lr 3e-4 --probe-size 128 --probe-k 4 --anchors-per-chain 1 \
+        --n-random 24 --seeds 3 --seed "$SEED" \
         --ssh-key "$SSH_KEY" --output-dir "$OUT"; then
       n=$(cat "$OUT"/labels.jsonl 2>/dev/null | wc -l | tr -d ' ')
       echo "=== batch done: ~${n} labels saved to ${OUT} ==="
