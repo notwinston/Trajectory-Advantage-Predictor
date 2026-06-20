@@ -260,5 +260,54 @@ class ModelTests(_SynthCase):
             self.assertLess(fl, 0.95 * il, f"final {fl} !< 0.95*initial {il}")
 
 
+# --------------------------------------------------------------------------- #
+# Phase 6 — run_all end-to-end (CSV rows/columns + report artifacts)
+# --------------------------------------------------------------------------- #
+class RunAllTests(_SynthCase):
+    EXPECTED_MODELS = [
+        "tap", "tap-no-prob", "tap-no-grad", "tap-no-history",
+        "ridge", "gbt", "no_history_mlp", "numeric_only", "candidate_only",
+        "random", "reward_mean", "advantage_mean", "geo_mean_prob",
+        "arith_mean_prob", "reward_x_surprisal", "semantic_novelty",
+        "gradient_norm", "gradient_alignment",
+    ]
+    EXPECTED_METRICS = [
+        "spearman", "pair_acc", "top1_regret", "mean_true_utility",
+        "lift_random", "lift_reward", "lift_prob",
+    ]
+
+    def test_results_rows_and_columns(self):
+        from tap.run_all import evaluate_all
+
+        results, analysis = evaluate_all(self.data, "outputs/tap_synth_72", seed=0, epochs=20)
+        self.assertEqual(list(results["model"]), self.EXPECTED_MODELS)
+        for col in self.EXPECTED_METRICS:
+            self.assertIn(col, results.columns)
+        self.assertTrue(np.isfinite(results[self.EXPECTED_METRICS].to_numpy()).all())
+        # reference selectors have exactly zero self-lift.
+        rnd = results[results["model"] == "random"].iloc[0]
+        self.assertAlmostEqual(rnd["lift_random"], 0.0, places=9)
+        for key in ("beat_random", "beat_reward", "beat_prob"):
+            self.assertIn(key, analysis)
+
+    def test_write_all_artifacts(self):
+        from tap import report as R
+        from tap.run_all import evaluate_all
+
+        results, analysis = evaluate_all(self.data, "outputs/tap_synth_72", seed=0, epochs=20)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = R.write_all(tmp, results, analysis)
+            for key in ("results.csv", "report.md", "report.tex", "report.pdf"):
+                p = paths[key]
+                self.assertTrue(os.path.exists(p), p)
+                self.assertGreater(os.path.getsize(p), 1024, f"{key} too small")
+            from pathlib import Path
+
+            md = Path(paths["report.md"]).read_text()
+            self.assertIn(paths["pdf_engine"], md)  # engine recorded
+            self.assertIn("synthetic", md.lower())  # caveat present
+            self.assertTrue(any(w in md.lower() for w in ("beat", "did not beat")))
+
+
 if __name__ == "__main__":
     unittest.main()
