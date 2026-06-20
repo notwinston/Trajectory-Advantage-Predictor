@@ -356,9 +356,11 @@ def _token_logps_batch(model, fulls, prompt_lens, pad_id, cfg: BatteryConfig, *,
             for j, s in enumerate(chunk):
                 ids[j, : len(s)] = torch.tensor(s, dtype=torch.long, device=cfg.device)
                 attn[j, : len(s)] = 1
-            logits = model(input_ids=ids, attention_mask=attn).logits[:, :-1, :].float()
+            logits = model(input_ids=ids, attention_mask=attn).logits[:, :-1, :]  # keep model dtype; the .float() full-vocab copy was the OOM
             tgt = ids[:, 1:]
-            tok_lp = logits.gather(-1, tgt.unsqueeze(-1)).squeeze(-1) - torch.logsumexp(logits, dim=-1)
+            # -cross_entropy(...) == logp(tgt): upcasts to fp32 internally (same value as gather-logsumexp) but fused => far less memory
+            tok_lp = -torch.nn.functional.cross_entropy(
+                logits.reshape(-1, logits.size(-1)), tgt.reshape(-1), reduction="none").view(tgt.shape)
             for j, s in enumerate(chunk):
                 out.append(tok_lp[j, max(plens[j] - 1, 0) : len(s) - 1])
     return out
@@ -612,7 +614,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--pass-rates", type=Path, default=None)
     p.add_argument("--output", type=Path, default=Path("outputs/tap/labels.jsonl"))
     p.add_argument("--model-name", default=BatteryConfig.model_name)
-    p.add_argument("--domain", default="math", choices=("math", "code", "science", "mmlu"))
+    p.add_argument("--domain", default="math", choices=("math", "code", "science", "mmlu", "compmath", "codemmlu"))
     p.add_argument("--device", default="cuda")
     p.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
     p.add_argument("--grpo-steps", type=int, default=4)

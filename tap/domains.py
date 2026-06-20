@@ -230,6 +230,83 @@ class MMLUDomain:
         return 1.0 if _extract_letter(text) == item.get("answer", "") else 0.0
 
 
+# ---- COMPMATH (CompMath-MCQ; graduate math MCQ, leakage-free) ------------------
+
+class CompMathDomain:
+    name = "compmath"
+    system = "Answer the multiple-choice math question. End with 'Answer: <letter>'."
+
+    def load_splits(self, data_dir, *, probe_size, fingerprint_size, seed):
+        from datasets import load_dataset
+        ds = load_dataset("biancaraimondi/CompMath-MCQ", split="test")
+        rows = []
+        for i, ex in enumerate(ds):
+            opts = list(ex.get("options") or [])
+            cl = ex.get("correct_label")
+            if not (2 <= len(opts) <= 4) or cl is None or not (0 <= int(cl) < len(opts)):
+                continue
+            letters = "ABCD"[:len(opts)]
+            gold = letters[int(cl)]
+            body = ex["question"].strip() + "\n" + "\n".join(
+                f"{l}) {c}" for l, c in zip(letters, opts))
+            rows.append({"id": "compmath-%05d" % i, "question": body, "answer": gold,
+                         "solution": f"Answer: {gold}", "subject": ex.get("subtopic", "")})
+        order = _split_ids(len(rows), seed)
+        rows = [rows[i] for i in order]
+        k = probe_size + fingerprint_size
+        probe, train = rows[:k], rows[k:]
+        return {"train_rows": train,
+                "probes": {"global": probe[:probe_size], "fingerprint": probe[probe_size:k],
+                           "generic": GENERIC_PROMPTS}}
+
+    def reward(self, text, item):
+        return 1.0 if _extract_letter(text) == item.get("answer", "") else 0.0
+
+
+# ---- CODEMMLU (code-understanding MCQ, leakage-resistant) ----------------------
+
+class CodeMMLUDomain:
+    name = "codemmlu"
+    system = "Answer the multiple-choice question about code. End with 'Answer: <letter>'."
+    CONFIGS = ("programming_syntax", "software_principles", "api_frameworks", "dbms_sql")
+
+    def load_splits(self, data_dir, *, probe_size, fingerprint_size, seed):
+        from datasets import load_dataset
+        import ast
+        rows = []
+        for cfg in self.CONFIGS:
+            try:
+                ds = load_dataset("Fsoft-AIC/CodeMMLU", cfg, split="test")
+            except Exception:
+                continue
+            for i, ex in enumerate(ds):
+                ch = ex.get("choices")
+                if isinstance(ch, str):
+                    try:
+                        ch = ast.literal_eval(ch)
+                    except Exception:
+                        continue
+                ch = list(ch or [])
+                ans = (ex.get("answer") or "").strip().upper()
+                if not (2 <= len(ch) <= 4) or ans not in "ABCD"[:len(ch)]:
+                    continue
+                letters = "ABCD"[:len(ch)]
+                body = ex["question"].strip() + "\n" + "\n".join(
+                    f"{l}) {c}" for l, c in zip(letters, ch))
+                rows.append({"id": f"codemmlu-{cfg[:4]}-{i:05d}", "question": body, "answer": ans,
+                             "solution": f"Answer: {ans}", "subject": cfg})
+        order = _split_ids(len(rows), seed)
+        rows = [rows[i] for i in order]
+        k = probe_size + fingerprint_size
+        probe, train = rows[:k], rows[k:]
+        return {"train_rows": train,
+                "probes": {"global": probe[:probe_size], "fingerprint": probe[probe_size:k],
+                           "generic": GENERIC_PROMPTS}}
+
+    def reward(self, text, item):
+        return 1.0 if _extract_letter(text) == item.get("answer", "") else 0.0
+
+
 # Shared generic (non-target) prompts for the KL-drift probe -- domain-neutral text.
 GENERIC_PROMPTS: list[dict[str, Any]] = [
     {"id": "gen-0", "text": "The capital of France is Paris, a city on the river Seine."},
@@ -242,7 +319,8 @@ GENERIC_PROMPTS: list[dict[str, Any]] = [
 
 
 DOMAINS: dict[str, Domain] = {"math": MathDomain(), "code": CodeDomain(),
-                              "science": ScienceDomain(), "mmlu": MMLUDomain()}
+                              "science": ScienceDomain(), "mmlu": MMLUDomain(),
+                              "compmath": CompMathDomain(), "codemmlu": CodeMMLUDomain()}
 
 
 def get_domain(name: str) -> Domain:

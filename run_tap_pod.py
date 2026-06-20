@@ -164,7 +164,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-price-per-hour", type=float)
     p.add_argument("--disk-size-gb", type=int, default=200)
     p.add_argument("--model-name", default="Qwen/Qwen2.5-Math-1.5B-Instruct")
-    p.add_argument("--domain", default="math", choices=("math", "code", "science", "mmlu"))
+    p.add_argument("--domain", default="math", choices=("math", "code", "science", "mmlu", "compmath", "codemmlu"))
     p.add_argument("--grpo-steps", type=int, default=4)
     p.add_argument("--group-size", type=int, default=8)
     p.add_argument("--temperature", type=float, default=1.0)

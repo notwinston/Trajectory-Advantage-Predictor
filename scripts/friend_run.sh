@@ -40,9 +40,9 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 PROVIDER="${PROVIDER:-datacrunch}"
 
 case "$DOMAIN" in
-  math|code)    MAXTOK=768; MB=2; EB=12; GB=64 ;;  # GRAD batch small (OOM), logp moderate, GENERATION big (speed)
-  science|mmlu) MAXTOK=256; MB=8; EB=8;  GB=48 ;;
-  *) echo "domain must be one of: math code science mmlu"; exit 1 ;;
+  math|code)                       MAXTOK=768; MB=2; EB=12; GB=64 ;;  # generative: GRAD batch small (OOM), GENERATION big (speed)
+  science|mmlu|compmath|codemmlu)  MAXTOK=256; MB=8; EB=8;  GB=48 ;;  # MCQ: short answers => fast
+  *) echo "domain must be one of: math code science mmlu compmath codemmlu"; exit 1 ;;
 esac
 
 # GPU types tried in order until one has an available offer on your account.
