@@ -1,0 +1,129 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{longtable}
+\title{TAP v1 --- Trajectory Advantage Predictor: Implementation Report}
+\author{Wave 2: integration + Prime Intellect hardening + handoff}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{PDF engine:} reportlab 5.0.0 (\texttt{build\_report\_pdf.py}); no
+LaTeX toolchain is installed on the ARM64 build host, so this \texttt{.tex} source
+ships alongside a reportlab-rendered \texttt{report.pdf}.
+
+\section{Goal}
+TAP predicts a single scalar, \texttt{predicted\_utility\_points}, for a candidate
+GRPO update batch applied to a Qwen3-8B LoRA policy. It estimates how much applying
+that batch improves held-out MATH performance while lightly penalizing unrelated
+policy drift. Positive helps, $\approx 0$ has little effect, negative hurts or
+drifts. The hypothesis: a candidate update's usefulness is predictable from its
+reward, familiarity, gradient direction, current policy state, and similarity to
+recently reinforced updates. Success = TAP beats random and probability-only on
+held-out states; the strong result also beats reward-only and the no-history model.
+
+\section{Architecture}
+Three layers, separated so everything except GPU collection runs and is tested on CPU.
+\begin{enumerate}
+  \item \textbf{Data collection} (\texttt{math\_loop/}) on a 4--5$\times$H100 Prime
+  Intellect pod: \texttt{tap\_controller} walks 2 chains $\times$ 6 states $\times$
+  6 candidates, branching every candidate from the byte-identical before-state and
+  advancing the main chain with a seeded-random candidate; \texttt{branch.py} runs
+  one GRPO step via prime-rl resume and writes raw artifacts; \texttt{features.py}
+  converts them to four Parquet tables; \texttt{tap\_probes.py} computes probe NLL
+  and generic KL drift.
+  \item \textbf{Launcher + safety} (\texttt{run\_prime\_rl\_math\_loop.py},
+  \texttt{reap\_pods.py}), Wave 2 (Section~\ref{sec:wave2}).
+  \item \textbf{TAP model + evaluation} (\texttt{tap/}) on CPU: dataset/splits,
+  SmallTAP, baselines, training, within-state ranking eval, and the
+  \texttt{run\_all} end-to-end entry point.
+\end{enumerate}
+
+\section{Data schema}
+Four Parquet tables enforced by \texttt{tap/schema.py -{}-validate}: \textbf{states}
+(ids, step, seed, hashes, lr, grpo\_beta, lora\_rank, before-probes, Adam moment
+norms, 16-value policy fingerprint, history ids); \textbf{trajectories} (rewards,
+advantage, log-probability and entropy statistics/quantiles, confidence slope,
+log-ratios, clipped fraction, embedding); \textbf{candidates} (the main training
+table: reward/advantage moments, probability stats, 256-d embedding, 64-d gradient
+sketch, norms, history similarities, after-probes, gains, \texttt{utility\_points},
+exact-match diagnostics); \textbf{history} (last-4 updates: age, embedding, sketch,
+reward/probability stats, update norm, loss change).
+
+\paragraph{Utility label.}
+\begin{align*}
+\text{matched\_gain} &= \text{matched\_nll\_before} - \text{matched\_nll\_after}\\
+\text{global\_gain}  &= \text{global\_nll\_before}  - \text{global\_nll\_after}\\
+\text{utility\_points} &= 1000\,(0.8\,\text{matched\_gain} + 0.2\,\text{global\_gain}
+ - 0.03\max(\Delta\text{generic\_kl}, 0))
+\end{align*}
+All NLL/KL values are nats per non-padding token; exact-match is diagnostic only.
+
+\section{Models}
+\textbf{SmallTAP}: candidate-embedding projection $256\to64$, gradient-sketch
+$64\to32$, numeric MLP $16\to64$, state MLP $26\to32$, history projected to 64, one
+4-head candidate$\to$history cross-attention layer, and a two-layer MLP head
+(hidden 128) emitting one scalar. \textbf{Trainable parameters: 109{,}537} (under
+the 250k target). Baselines: random, reward/advantage mean, geometric/arithmetic
+probability, reward$\times$surprisal, semantic novelty, gradient norm/alignment
+(heuristics); ridge, gradient-boosted trees, no-history MLP, numeric-only,
+candidate-only (learned). If the attention model does not beat the simpler learned
+baselines on the real collection, the simpler model is reported as TAP v1.
+
+\paragraph{Training \& split.} Huber on standardized utility + $0.5\times$
+within-state pairwise ranking loss + small weight decay. Train on chain 0 / test on
+chain 1, swap, average both; all candidates from one state stay in one split.
+
+\section{Evaluation (synthetic placeholder)}
+The GPU collection is blocked on the Prime Intellect API key, so labels do not yet
+exist. The table below is the plumbing-check output of \texttt{tap.run\_all} on the
+synthetic 72-label dataset --- \emph{not} a scientific result.
+
+\begin{longtable}{lrrrrrr}
+\toprule
+Model & Spearman & Pair acc & Mean util & vs rand & vs reward & vs prob\\
+\midrule
+\endhead
+TAP (SmallTAP) & 0.738 & 0.817 & 34.42 & +39.35 & +12.57 & +48.30\\
+ridge & 0.829 & 0.861 & 35.79 & +40.72 & +13.94 & +49.67\\
+candidate-only & 0.843 & 0.872 & 36.59 & +41.52 & +14.74 & +50.46\\
+no-history MLP & 0.481 & 0.683 & 32.92 & +37.85 & +11.07 & +46.80\\
+reward-only & 0.233 & 0.594 & 21.85 & +26.78 & 0.00 & +35.73\\
+prob-only (geo) & $-0.148$ & 0.444 & $-13.88$ & $-8.95$ & $-35.73$ & 0.00\\
+random & 0.086 & 0.533 & $-4.93$ & 0.00 & $-26.78$ & +8.95\\
+\bottomrule
+\end{longtable}
+
+On synthetic data TAP beats random, reward-only, and probability-only; ridge and
+candidate-only edge it (the comparison the real run must resolve).
+
+\section{Wave 2 status}\label{sec:wave2}
+\textbf{CPU gate PASS}: py\_compile of \texttt{math\_loop/*.py} + \texttt{tap/*.py};
+55 TAP unit tests; \texttt{tap\_controller -{}-dry-run}; \texttt{tap.run\_all} on the
+synthetic set. \textbf{Launcher hardened + 15 tests} (including a SIGTERM-teardown
+subprocess test): lambdalabs default; required \texttt{-{}-prime-rl-commit}; a
+fail-closed cost monitor and an independent wall-clock deadline that reap the pod
+and exit non-zero on breach or monitor failure; \texttt{pod\_id.txt} on create;
+atexit + SIGINT/SIGTERM + breach teardown reaping by \texttt{tap-v1-smoke-} prefix
+and by id; \texttt{-{}-keep-pod} forbidden; \texttt{-{}-gpu-count > 1} and any
+non-\texttt{-{}-smoke} run gated behind \texttt{TAP\_ALLOW\_FULL\_RUN=1}; SSH via the
+provided \texttt{/workspace/private\_key.pem}. \texttt{reap\_pods.py} refuses empty
+or non-\texttt{tap-v1-} prefixes. \textbf{Collection driver IMPLEMENTED +
+CPU-validated}: \texttt{run\_controller} adopts the fresh-branch-weights recipe
+(weights-only branch, \texttt{run\_default} layout, no optimizer resume), reads
+prime-rl's persisted rollouts, scores matched/global + generic-KL probes, computes
+the fingerprint + LoRA gradient sketch, and writes the raw tree \texttt{features}
+converts. A synthetic raw tree at the smoke shape (2 chains $\times$ 1 state $\times$
+2 candidates) passes \texttt{features.convert} $\to$ \texttt{tap.schema --validate}
+$\to$ \texttt{tap.run\_all} (exit 0). \textbf{Pod path validated through bootstrap +
+pre-flight} on a 2$\times$H100 lambdalabs pod: prime-rl pinned \texttt{4d361ad} with
+submodules, \texttt{uv sync --all-extras}, \texttt{peft} installed, import (d)
+resolves. Pod-validated launcher fixes baked in: 2-GPU minimum, sudo +
+\texttt{/workspace} for lambdalabs, https submodule rewrite, peft install, wandb
+disabled. The full GPU collection was not run to completion (stopped to prepare the
+repo); see \texttt{RUNBOOK.md} Step 2.
+
+\end{document}

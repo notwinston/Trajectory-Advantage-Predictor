@@ -1,0 +1,23 @@
+# TAP v1 — CPU-only Python dependencies (ARM64 / aarch64, no local GPU).
+#
+# Reproduce the Wave 0 environment with uv:
+#   uv venv .venv --python 3.12
+#   uv pip install --python .venv numpy pandas pyarrow scikit-learn
+#   uv pip install --python .venv torch --index-url https://download.pytorch.org/whl/cpu
+#
+# torch is the CPU build (2.12.1+cpu) from the PyTorch CPU wheel index. All
+# torch/transformers/peft imports stay inside functions so py_compile and
+# unittest run without GPU libraries.
+#
+# Stuck-state fallback: if no ARM64 CPU torch wheel can be installed after 3
+# attempts, uncomment the marker line "# TAP_NO_TORCH=1" below and drop torch
+# (use the scikit-learn path — the spec permits reporting the simpler model as
+# TAP v1).
+
+numpy==2.4.6
+pandas==3.0.3
+pyarrow==24.0.0
+scikit-learn==1.9.0
+
+# CPU torch: install from --index-url https://download.pytorch.org/whl/cpu
+torch==2.12.1

@@ -3,3 +3,13 @@ __pycache__/
 data/math_loop/
 outputs/
 ralph-plans/
+.venv/
+
+# Secrets / keys — never commit
+*.pem
+id_ed25519*
+id_rsa*
+.ssh/
+.env
+*.key
+pod_id.txt

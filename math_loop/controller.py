@@ -18,6 +18,9 @@ from math_loop.probe_loss import compute_probe_loss
 from math_loop.schedule import CandidateBatch, build_candidate_schedule
 
 
+CONTROLLER_VERSION = "fresh-branch-weights-v1"
+
+
 def run_command(command: list[str], *, dry_run: bool = False, log_path: Path | None = None) -> None:
     rendered = shlex.join(command)
     if dry_run:
@@ -45,32 +48,38 @@ def run_command(command: list[str], *, dry_run: bool = False, log_path: Path | N
 
 
 def checkpoint_steps(output_dir: Path) -> list[int]:
-    ckpt_dir = output_dir / "checkpoints"
-    steps = []
-    for path in ckpt_dir.glob("step_*"):
-        try:
-            steps.append(int(path.name.rsplit("_", 1)[1]))
-        except ValueError:
-            continue
+    steps = set()
+    for ckpt_dir in checkpoint_roots(output_dir):
+        for path in ckpt_dir.glob("step_*"):
+            try:
+                steps.add(int(path.name.rsplit("_", 1)[1]))
+            except ValueError:
+                continue
     return sorted(steps)
 
 
+def checkpoint_roots(output_dir: Path) -> list[Path]:
+    return [output_dir / "run_default" / "checkpoints", output_dir / "checkpoints"]
+
+
+def weight_roots(output_dir: Path) -> list[Path]:
+    return [output_dir / "run_default" / "weights", output_dir / "weights"]
+
+
+def checkpoint_path(output_dir: Path, step: int) -> Path:
+    for ckpt_dir in checkpoint_roots(output_dir):
+        candidate = ckpt_dir / f"step_{step}"
+        if candidate.exists():
+            return candidate
+    return checkpoint_roots(output_dir)[0] / f"step_{step}"
+
+
 def weights_path(output_dir: Path, step: int) -> Path:
-    weights = output_dir / "weights" / f"step_{step}"
-    if weights.exists():
-        return weights
-    return output_dir / "checkpoints" / f"step_{step}"
-
-
-def copy_resume_checkpoint(source_output: Path, branch_output: Path, step: int) -> None:
-    source = source_output / "checkpoints" / f"step_{step}"
-    if not source.exists():
-        raise FileNotFoundError(f"missing source checkpoint {source}")
-    destination = branch_output / "checkpoints" / f"step_{step}"
-    if destination.exists():
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination)
+    for weights_dir in weight_roots(output_dir):
+        candidate = weights_dir / f"step_{step}"
+        if candidate.exists():
+            return candidate
+    return checkpoint_path(output_dir, step)
 
 
 def select_rows(rows: list[dict[str, Any]], prompt_ids: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -150,6 +159,8 @@ def write_run_config(
     args: argparse.Namespace,
     clean_output_dir: bool,
     run_name: str,
+    model_name: str | None = None,
+    renderer_name: str = "auto",
 ) -> Path:
     return write_prime_rl_config(
         path,
@@ -161,7 +172,7 @@ def write_run_config(
             group_size=args.group_size,
             seq_len=args.seq_len,
             max_completion_tokens=args.max_completion_tokens,
-            model_name=args.model_name,
+            model_name=model_name or args.model_name,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
@@ -169,6 +180,7 @@ def write_run_config(
             gpus_per_node=max(args.gpu_count, 2),
             clean_output_dir=clean_output_dir,
             run_name=run_name,
+            renderer_name=renderer_name,
         ),
     )
 
@@ -187,6 +199,7 @@ def maybe_probe(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     if args.skip_probe_loss:
+        print(f"Skipping probe loss for {checkpoint}", flush=True)
         return {
             "checkpoint": str(checkpoint),
             "examples": 0,
@@ -206,6 +219,12 @@ def maybe_probe(
 
 
 def run_controller(args: argparse.Namespace) -> None:
+    print(
+        f"Starting math loop controller ({CONTROLLER_VERSION}): states={args.states}, "
+        f"candidates_per_state={args.candidates_per_state}, "
+        f"batch_prompts={args.batch_prompts}, group_size={args.group_size}",
+        flush=True,
+    )
     if args.force and args.output_dir.exists():
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -213,12 +232,15 @@ def run_controller(args: argparse.Namespace) -> None:
     log_dir = args.output_dir / "logs"
     label_path = args.labels_path or (args.output_dir / "labels.jsonl")
 
+    print(f"Preparing MATH train/probe splits in {args.data_dir}...", flush=True)
     training = prepare_training_splits(
         args.data_dir,
         seed=args.seed,
         probe_size=args.probe_size,
         force=args.force_data,
     )
+    print(f"Using train split {training.train_pool}", flush=True)
+    print(f"Using probe split {training.probe}", flush=True)
     train_rows = read_jsonl(training.train_pool)
     prompt_ids = [row["id"] for row in train_rows]
     schedule = build_candidate_schedule(
@@ -241,12 +263,18 @@ def run_controller(args: argparse.Namespace) -> None:
     )
     steps = checkpoint_steps(state_output)
     if len(steps) < args.states:
+        print(
+            f"Launching prime-rl state generation for {args.states} step(s). "
+            f"Logs: {log_dir / 'state_generation.log'}",
+            flush=True,
+        )
         run_command(
             rl_command(args, state_config),
             dry_run=args.dry_run,
             log_path=log_dir / "state_generation.log",
         )
         steps = checkpoint_steps(state_output)
+        print(f"State generation finished; found checkpoint steps: {steps}", flush=True)
 
     if args.dry_run:
         print(f"would write labels to {label_path}")
@@ -263,6 +291,7 @@ def run_controller(args: argparse.Namespace) -> None:
     state_probe_cache: dict[int, dict[str, Any]] = {}
     for ordinal, step in enumerate(steps, start=1):
         state_checkpoint = weights_path(state_output, step)
+        print(f"Processing state {ordinal}/{len(steps)} from step {step}: {state_checkpoint}", flush=True)
         state_probe_cache[ordinal] = maybe_probe(state_checkpoint, training.probe, args=args)
         for candidate in schedule_by_state[ordinal]:
             key = (candidate.state_index, candidate.candidate_index)
@@ -277,7 +306,13 @@ def run_controller(args: argparse.Namespace) -> None:
             )
             branch_split = branch_output / "candidate_prompts.jsonl"
             write_jsonl(branch_split, select_rows(train_rows, candidate.prompt_ids))
-            copy_resume_checkpoint(state_output, branch_output, step)
+            print(
+                f"Launching branch state={candidate.state_index} "
+                f"candidate={candidate.candidate_index} prompts={list(candidate.prompt_ids)}. "
+                f"Initial weights: {state_checkpoint}. "
+                f"Logs: {log_dir / 'branches' / f'state_{candidate.state_index:03d}_candidate_{candidate.candidate_index:02d}.log'}",
+                flush=True,
+            )
 
             branch_config = write_run_config(
                 config_dir
@@ -286,18 +321,20 @@ def run_controller(args: argparse.Namespace) -> None:
                 / f"candidate_{candidate.candidate_index:02d}.toml",
                 output_dir=branch_output,
                 split_path=branch_split,
-                max_steps=step + 1,
+                max_steps=1,
                 args=args,
                 clean_output_dir=False,
                 run_name=f"qwen3-math-s{candidate.state_index:03d}-c{candidate.candidate_index:02d}",
+                model_name=str(state_checkpoint),
+                renderer_name="default",
             )
             run_command(
-                rl_command(args, branch_config, resume_step=step),
+                rl_command(args, branch_config),
                 log_path=log_dir
                 / "branches"
                 / f"state_{candidate.state_index:03d}_candidate_{candidate.candidate_index:02d}.log",
             )
-            branch_checkpoint = weights_path(branch_output, step + 1)
+            branch_checkpoint = weights_path(branch_output, 1)
             state_probe = state_probe_cache[ordinal]
             branch_probe = maybe_probe(branch_checkpoint, training.probe, args=args)
             state_nll = state_probe["nll"]
@@ -318,6 +355,7 @@ def run_controller(args: argparse.Namespace) -> None:
                     "reward_summary": reward_summary(branch_output),
                 },
             )
+            print(f"Wrote label for state={candidate.state_index} candidate={candidate.candidate_index}", flush=True)
             existing.add(key)
 
 
