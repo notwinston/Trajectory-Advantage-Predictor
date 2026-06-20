@@ -77,7 +77,8 @@ class BatteryConfig:
     acc_eval: bool = True        # measure greedy accuracy (slow); off => NLL-only gate
     grad_clip: float = 1.0
     micro_batch: int = 8         # GRAD logp fwd/bwd batch (full-vocab fp32 logits => OOM-prone, keep low for long gen)
-    eval_batch: int = 0          # generation/grad-free batch (KV-cache cheap, no OOM); 0 => micro_batch
+    eval_batch: int = 0          # grad-free logp batch (still materializes fp32 logits => moderate); 0 => micro_batch
+    gen_batch: int = 0           # pure GENERATION batch (KV-cache cheap => can be LARGE, big speedup, same greedy outputs); 0 => eval_batch
     kl_beta: float = 0.04        # KL-to-reference weight (GRPO objective)
     clip_eps: float = 0.2        # importance-ratio clip (PPO/GRPO surrogate)
     adv_eps: float = 1e-8
@@ -222,7 +223,7 @@ def eval_accuracy(model, tok, rows: Sequence[dict], cfg: BatteryConfig) -> float
     old_side = tok.padding_side
     tok.padding_side = "left"      # left-pad for batched decoder-only generation
     correct = 0
-    eb = cfg.eval_batch or cfg.micro_batch    # generation has no grad graph => safe to batch big
+    eb = cfg.gen_batch or cfg.eval_batch or cfg.micro_batch   # pure generation: no grad, no fp32 logits => batch BIG
     try:
         for i in range(0, len(rows), eb):
             chunk = rows[i:i + eb]
@@ -622,7 +623,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--micro-batch", type=int, default=BatteryConfig.micro_batch,
                    help="GRAD logp fwd/bwd batch; lower => less GPU memory (fixes OOM on long-gen domains)")
     p.add_argument("--eval-batch", type=int, default=BatteryConfig.eval_batch,
-                   help="generation/grad-free batch (no OOM); 0 => micro_batch. Use high (8-16) for long-gen domains")
+                   help="grad-free logp batch (fp32 logits => moderate, 8-16); 0 => micro_batch")
+    p.add_argument("--gen-batch", type=int, default=BatteryConfig.gen_batch,
+                   help="pure generation batch (eval/rollout); LARGE (48-96) => big speedup, same greedy outputs; 0 => eval_batch")
     p.add_argument("--probe-size", type=int, default=64)
     p.add_argument("--probe-k", type=int, default=4)
     p.add_argument("--eval-sample", dest="eval_greedy", action="store_false",
@@ -667,7 +670,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = BatteryConfig(model_name=args.model_name, domain_name=args.domain, device=args.device, dtype=args.dtype,
                         grpo_steps=args.grpo_steps, group_size=args.group_size, max_new_tokens=args.max_new_tokens,
-                        micro_batch=args.micro_batch, eval_batch=args.eval_batch,
+                        micro_batch=args.micro_batch, eval_batch=args.eval_batch, gen_batch=args.gen_batch,
                         probe_k=args.probe_k, eval_greedy=args.eval_greedy, acc_eval=args.acc_eval, n_chains=args.n_chains,
                         anchors_per_chain=args.anchors_per_chain, seeds=args.seeds, lr=args.lr, seed=args.seed,
                         temperature=args.temperature)

@@ -71,6 +71,7 @@ def build_battery_command(args: argparse.Namespace) -> list[str]:
               "--max-new-tokens", str(args.max_new_tokens),
               "--micro-batch", str(args.micro_batch),
               "--eval-batch", str(args.eval_batch),
+              "--gen-batch", str(args.gen_batch),
               "--probe-size", str(args.probe_size),
               "--probe-k", str(args.probe_k),
               "--cohort-size", str(args.cohort_size),
@@ -171,7 +172,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--micro-batch", type=int, default=8,
                    help="GRAD logp batch; lower => less GPU memory (use 2 for 768-tok domains on A100-40)")
     p.add_argument("--eval-batch", type=int, default=0,
-                   help="generation/grad-free batch (no OOM); 0 => micro_batch. Use 12-16 for 768-tok domains")
+                   help="grad-free logp batch (fp32 logits => moderate, 8-16); 0 => micro_batch")
+    p.add_argument("--gen-batch", type=int, default=0,
+                   help="pure generation batch (eval/rollout); LARGE (48-96) => big speedup, same greedy outputs")
     p.add_argument("--probe-size", type=int, default=64)
     p.add_argument("--probe-k", type=int, default=4)
     p.add_argument("--cohort-size", type=int, default=8)
