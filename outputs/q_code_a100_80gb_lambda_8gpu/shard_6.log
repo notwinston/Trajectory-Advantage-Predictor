@@ -1,0 +1,23 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Generating train split:   0%|          | 0/374 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 374/374 [00:00<00:00, 76658.83 examples/s]
+Generating test split:   0%|          | 0/500 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 500/500 [00:00<00:00, 169316.32 examples/s]
+Generating validation split:   0%|          | 0/90 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 90/90 [00:00<00:00, 40261.02 examples/s]
+Generating prompt split:   0%|          | 0/10 [00:00<?, ? examples/s]Generating prompt split: 100%|██████████| 10/10 [00:00<00:00, 5228.50 examples/s]
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files:  50%|█████     | 1/2 [00:05<00:05,  5.82s/it]Fetching 2 files: 100%|██████████| 2/2 [00:05<00:00,  2.91s/it]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3603.49it/s]
+[tap] model=Qwen/Qwen3-1.7B chains=1 anchors=1 cohorts=10 seeds=3
+[tap] anchor c0 a0 ready | nll_before=3.0300 acc_before=0.336 cohorts=10x3seeds
+[tap] c0 a0 labelnoise-050-007     s0 collecting+training...
+[tap] c0 a0 labelnoise-050-007     s0 lift_acc=+0.0078 lift_nll=+1.2755 acc 0.336->0.344 t=1018s
+[tap] c0 a0 labelnoise-050-007     s1 collecting+training...
+[tap] c0 a0 labelnoise-050-007     s1 lift_acc=-0.0234 lift_nll=+1.3710 acc 0.336->0.312 t=942s
+[tap] c0 a0 labelnoise-050-007     s2 collecting+training...
+[tap] c0 a0 labelnoise-050-007     s2 lift_acc=+0.0156 lift_nll=+1.5458 acc 0.336->0.352 t=935s
+[tap] c0 a0 dup-k08-000            s0 collecting+training...
+[tap] c0 a0 dup-k08-000            s0 lift_acc=-0.0234 lift_nll=+1.6471 acc 0.336->0.312 t=969s
+[tap] c0 a0 dup-k08-000            s1 collecting+training...
+[tap] c0 a0 dup-k08-000            s1 lift_acc=+0.1562 lift_nll=+1.2263 acc 0.336->0.492 t=608s
+[tap] c0 a0 dup-k08-000            s2 collecting+training...
+[tap] c0 a0 dup-k08-000            s2 lift_acc=+0.0625 lift_nll=+1.2976 acc 0.336->0.398 t=885s
+[tap] c0 a0 random-006             s0 collecting+training...

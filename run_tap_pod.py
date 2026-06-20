@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -46,7 +47,26 @@ def build_bootstrap_command() -> list[str]:
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-apt_retry() {{ for i in $(seq 1 60); do if $SUDO apt-get -o DPkg::Lock::Timeout=600 "$@"; then return 0; fi; echo "apt retry $i"; sleep 10; done; return 1; }}
+apt_holders() {{
+  {{
+    pgrep -x apt-get || true
+    pgrep -x apt || true
+    pgrep -x dpkg || true
+    pgrep -af unattended-upgrade | awk '!/unattended-upgrade-shutdown/ {{print $1}}' || true
+    pgrep -x apt.systemd.daily || true
+  }} | sort -u
+}}
+wait_for_apt_idle() {{
+  for i in $(seq 1 180); do
+    holders="$(apt_holders | xargs || true)"
+    [ -z "$holders" ] && return 0
+    echo "waiting for existing apt/dpkg process(es): $holders"
+    sleep 10
+  done
+  echo "apt/dpkg still busy after waiting" >&2
+  return 1
+}}
+apt_retry() {{ for i in $(seq 1 60); do wait_for_apt_idle || true; if $SUDO apt-get -o DPkg::Lock::Timeout=600 -o APT::Get::Lock::Timeout=600 "$@"; then return 0; fi; echo "apt retry $i"; sleep 10; done; return 1; }}
 apt_retry update
 apt_retry install -y --no-install-recommends ca-certificates curl git rsync python3-venv
 command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -157,7 +177,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--gpu-count", type=int, default=1)
     p.add_argument("--shard-base", type=int, default=0, help="this pod's first global shard index")
     p.add_argument("--shard-total", type=int, default=0, help="total shards across ALL pods (0 => gpu-count)")
-    p.add_argument("--ssh-key", type=Path, default=Path("~/.ssh/id_ed25519"))
+    p.add_argument("--ssh-key", type=Path, default=Path(os.environ.get("SSH_KEY", "~/.ssh/id_ed25519")))
     p.add_argument("--spot", action="store_true")
     p.add_argument("--max-price-per-hour", type=float)
     p.add_argument("--disk-size-gb", type=int, default=200)

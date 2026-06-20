@@ -1,0 +1,62 @@
+Warning: Permanently added '86.38.238.105' (ED25519) to the list of known hosts.
+Reading package lists...
+apt retry 1
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 2
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 3
+Reading package lists...
+apt retry 4
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 5
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 6
+Reading package lists...
+apt retry 7
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+apt retry 8
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+apt retry 9
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+apt retry 10
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 11
+Reading package lists...
+apt retry 12
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+apt retry 13
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 14
+Reading package lists...
+E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2536 (apt-get)
+E: Unable to lock directory /var/lib/apt/lists/
+apt retry 15
+Connection to 86.38.238.105 closed by remote host.

@@ -1,0 +1,17 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files:  50%|█████     | 1/2 [00:05<00:05,  5.85s/it]Fetching 2 files: 100%|██████████| 2/2 [00:05<00:00,  2.93s/it]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  97%|█████████▋| 301/311 [00:00<00:00, 2963.11it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3041.48it/s]
+[tap] model=Qwen/Qwen3-1.7B chains=1 anchors=1 cohorts=10 seeds=3
+[tap] anchor c0 a0 ready | nll_before=3.0300 acc_before=0.336 cohorts=10x3seeds
+[tap] c0 a0 labelnoise-100-004     s0 collecting+training...
+[tap] c0 a0 labelnoise-100-004     s0 lift_acc=+0.0000 lift_nll=+1.6151 acc 0.336->0.336 t=1214s
+[tap] c0 a0 labelnoise-100-004     s1 collecting+training...
+[tap] c0 a0 labelnoise-100-004     s1 lift_acc=+0.0938 lift_nll=+1.5067 acc 0.336->0.430 t=590s
+[tap] c0 a0 labelnoise-100-004     s2 collecting+training...
+[tap] c0 a0 labelnoise-100-004     s2 lift_acc=-0.0312 lift_nll=+1.5898 acc 0.336->0.305 t=983s
+[tap] c0 a0 dup-k02-001            s0 collecting+training...
+[tap] c0 a0 dup-k02-001            s0 lift_acc=-0.0234 lift_nll=+1.6748 acc 0.336->0.312 t=1123s
+[tap] c0 a0 dup-k02-001            s1 collecting+training...
+[tap] c0 a0 dup-k02-001            s1 lift_acc=+0.0000 lift_nll=+1.2280 acc 0.336->0.336 t=987s
+[tap] c0 a0 dup-k02-001            s2 collecting+training...
