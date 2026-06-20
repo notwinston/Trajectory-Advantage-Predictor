@@ -53,7 +53,8 @@ command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"
 mkdir -p {REMOTE_WORK} && cd {REMOTE_WORK}
 uv venv --python 3.12 .venv && . .venv/bin/activate
-uv pip install torch transformers peft datasets accelerate lightgbm shap
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124   # cu130 default torch needs driver>=13.0; lambda is 12.8 -> pin cu124 (works on 12.8 & 13.0)
+uv pip install transformers peft datasets accelerate lightgbm shap
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 """
     return ["bash", "-lc", script]
@@ -68,6 +69,7 @@ def build_battery_command(args: argparse.Namespace) -> list[str]:
               "--group-size", str(args.group_size),
               "--temperature", str(args.temperature),
               "--max-new-tokens", str(args.max_new_tokens),
+              "--micro-batch", str(args.micro_batch),
               "--probe-size", str(args.probe_size),
               "--probe-k", str(args.probe_k),
               "--cohort-size", str(args.cohort_size),
@@ -165,6 +167,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--group-size", type=int, default=8)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--micro-batch", type=int, default=8,
+                   help="seqs per fwd/bwd pass; lower => less GPU memory (use 1-2 for 768-tok domains on A100-40)")
     p.add_argument("--probe-size", type=int, default=64)
     p.add_argument("--probe-k", type=int, default=4)
     p.add_argument("--cohort-size", type=int, default=8)

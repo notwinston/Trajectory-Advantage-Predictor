@@ -616,6 +616,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--temperature", type=float, default=1.0,
                    help="sampling temperature for rollouts; >1 raises within-group reward variance (GRPO signal)")
     p.add_argument("--max-new-tokens", type=int, default=512)
+    p.add_argument("--micro-batch", type=int, default=BatteryConfig.micro_batch,
+                   help="seqs per fwd/bwd pass; lower => less GPU memory (fixes OOM on long-gen domains)")
     p.add_argument("--probe-size", type=int, default=64)
     p.add_argument("--probe-k", type=int, default=4)
     p.add_argument("--eval-sample", dest="eval_greedy", action="store_false",
@@ -660,6 +662,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = BatteryConfig(model_name=args.model_name, domain_name=args.domain, device=args.device, dtype=args.dtype,
                         grpo_steps=args.grpo_steps, group_size=args.group_size, max_new_tokens=args.max_new_tokens,
+                        micro_batch=args.micro_batch,
                         probe_k=args.probe_k, eval_greedy=args.eval_greedy, acc_eval=args.acc_eval, n_chains=args.n_chains,
                         anchors_per_chain=args.anchors_per_chain, seeds=args.seeds, lr=args.lr, seed=args.seed,
                         temperature=args.temperature)
