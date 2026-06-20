@@ -1,0 +1,40 @@
+{
+  "acc": {
+    "advice": "Re-run the battery with --seeds >= 2 per cohort.",
+    "between_cohort_std": 0.0,
+    "icc": NaN,
+    "label": "acc",
+    "n_cohorts": 4,
+    "n_cohorts_with_repeats": 4,
+    "snr": NaN,
+    "verdict": "insufficient_repeats",
+    "within_cohort_std": 0.0
+  },
+  "decision": {
+    "proceed": true,
+    "proxy_corr_acc_nll": 0.0,
+    "rule": "proceed if acc OR nll ICC >= 0.2 (nll is the dense early indicator)"
+  },
+  "nll": {
+    "advice": "Proceed to full label collection.",
+    "between_cohort_std": 0.003424294859028771,
+    "icc": 0.8834839720328057,
+    "label": "nll",
+    "n_cohorts": 4,
+    "n_cohorts_with_repeats": 4,
+    "snr": 2.753635814836109,
+    "verdict": "strong_signal",
+    "within_cohort_std": 0.0012435540087856326
+  },
+  "utility": {
+    "advice": "Proceed to full label collection.",
+    "between_cohort_std": 0.0088426048962254,
+    "icc": 0.9382112304627983,
+    "label": "utility",
+    "n_cohorts": 4,
+    "n_cohorts_with_repeats": 4,
+    "snr": 3.896687155941575,
+    "verdict": "strong_signal",
+    "within_cohort_std": 0.002269262206191154
+  }
+}

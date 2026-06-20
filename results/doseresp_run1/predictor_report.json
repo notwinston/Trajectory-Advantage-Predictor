@@ -1,0 +1,162 @@
+{
+  "eval": {
+    "backend": "ridge",
+    "baselines": {
+      "best_single_feature": {
+        "feature": "frac_nondegenerate",
+        "within_anchor_spearman": 0.7857142857142858
+      },
+      "difficulty_only": {
+        "pairwise_ranking_accuracy": 0.7272727272727273,
+        "pearson": 0.5072108489033541,
+        "rmse": 0.0027267645302421523,
+        "selection": {
+          "frac_of_oracle": 0.3176583071293606,
+          "k_frac": 0.25,
+          "lift_over_random": 0.0015191104051681115,
+          "topk_model": 0.003996793003112287,
+          "topk_oracle": 0.0072598978621887245,
+          "topk_random": 0.0024776825979441752
+        },
+        "sign_accuracy": 0.5,
+        "spearman": 0.4285714285714286,
+        "top1_regret": 0.0065262097181528755,
+        "within_anchor_spearman": 0.4285714285714286
+      },
+      "predict_mean": {
+        "pairwise_ranking_accuracy": 0.0,
+        "pearson": -1.0,
+        "rmse": 0.003535025398528796,
+        "selection": {
+          "frac_of_oracle": -0.5181035275574482,
+          "k_frac": 0.25,
+          "lift_over_random": -0.0024776825979441752,
+          "topk_model": 0.0,
+          "topk_oracle": 0.0072598978621887245,
+          "topk_random": 0.0024776825979441752
+        },
+        "sign_accuracy": 0.5,
+        "spearman": -0.7619047619047621,
+        "top1_regret": 0.009010660640621615,
+        "within_anchor_spearman": -0.7619047619047621
+      },
+      "redundancy_only": {
+        "pairwise_ranking_accuracy": 0.36363636363636365,
+        "pearson": -0.10789318423929747,
+        "rmse": 0.003672400473127565,
+        "selection": {
+          "frac_of_oracle": 0.05789888757286661,
+          "k_frac": 0.25,
+          "lift_over_random": 0.00027688494393374175,
+          "topk_model": 0.002754567541877917,
+          "topk_oracle": 0.0072598978621887245,
+          "topk_random": 0.0024776825979441752
+        },
+        "sign_accuracy": 0.25,
+        "spearman": -0.28571428571428575,
+        "top1_regret": 0.009010660640621615,
+        "within_anchor_spearman": -0.28571428571428575
+      },
+      "reward_only": {
+        "pairwise_ranking_accuracy": 0.7272727272727273,
+        "pearson": 0.5072108489033541,
+        "rmse": 0.0027267645302421523,
+        "selection": {
+          "frac_of_oracle": 0.3176583071293606,
+          "k_frac": 0.25,
+          "lift_over_random": 0.0015191104051681115,
+          "topk_model": 0.003996793003112287,
+          "topk_oracle": 0.0072598978621887245,
+          "topk_random": 0.0024776825979441752
+        },
+        "sign_accuracy": 0.5,
+        "spearman": 0.4285714285714286,
+        "top1_regret": 0.0065262097181528755,
+        "within_anchor_spearman": 0.4285714285714286
+      }
+    },
+    "beats_best_single_feature": true,
+    "beats_difficulty": true,
+    "conformal": {
+      "alpha": 0.2,
+      "coverage": 1.0,
+      "halfwidth": 0.002776462408317933,
+      "indeterminate_sign_rate": 0.5,
+      "n": 8
+    },
+    "explanation": {
+      "features": [
+        {
+          "direction": 1,
+          "feature": "frac_nondegenerate",
+          "importance": 0.000887572812493158
+        },
+        {
+          "direction": -1,
+          "feature": "frac_all_wrong",
+          "importance": 0.0006136211928081709
+        },
+        {
+          "direction": -1,
+          "feature": "frac_all_correct",
+          "importance": 0.0006125744441618013
+        },
+        {
+          "direction": 1,
+          "feature": "len_std",
+          "importance": 0.0005859327603435369
+        },
+        {
+          "direction": 1,
+          "feature": "pass_rate",
+          "importance": 0.00037825450479844644
+        },
+        {
+          "direction": 1,
+          "feature": "group_passrate_mean",
+          "importance": 0.000378254504798446
+        },
+        {
+          "direction": 1,
+          "feature": "reward_mean",
+          "importance": 0.00037825450479844573
+        },
+        {
+          "direction": 1,
+          "feature": "redundancy_mean",
+          "importance": 0.0002886964149169712
+        },
+        {
+          "direction": 1,
+          "feature": "reward_std",
+          "importance": 0.0002444801787793833
+        },
+        {
+          "direction": 1,
+          "feature": "mean_logprob",
+          "importance": 0.00022877272409476857
+        }
+      ],
+      "method": "ridge_coef"
+    },
+    "label": "nll",
+    "n": 8,
+    "n_features": 23,
+    "pairwise_ranking_accuracy": 0.9545454545454546,
+    "pearson": 0.9194903686300198,
+    "rmse": 0.0012353220357906151,
+    "scheme": "loocv",
+    "selection": {
+      "frac_of_oracle": 1.0,
+      "k_frac": 0.25,
+      "lift_over_random": 0.004782215264244549,
+      "topk_model": 0.0072598978621887245,
+      "topk_oracle": 0.0072598978621887245,
+      "topk_random": 0.0024776825979441752
+    },
+    "sign_accuracy": 0.5,
+    "spearman": 0.880952380952381,
+    "top1_regret": 0.003501525556865781,
+    "within_anchor_spearman": 0.880952380952381
+  }
+}

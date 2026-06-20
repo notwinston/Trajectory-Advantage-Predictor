@@ -97,7 +97,12 @@ def split_math_rows(
     if len(rows) <= probe_size:
         raise ValueError(f"need more than {probe_size} MATH rows, got {len(rows)}")
 
-    normalized = [normalize_math_row(row, index) for index, row in enumerate(rows)]
+    normalized = []
+    for index, row in enumerate(rows):
+        try:  # some MATH rows have no parseable boxed answer; skip rather than abort
+            normalized.append(normalize_math_row(row, index))
+        except ValueError:
+            continue
     indices = list(range(len(normalized)))
     random.Random(seed).shuffle(indices)
     probe_indices = set(indices[:probe_size])
