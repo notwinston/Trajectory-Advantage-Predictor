@@ -630,7 +630,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--grpo-beta", type=float, default=0.04)
     parser.add_argument("--seq-len", type=int, default=4096)
     parser.add_argument("--max-completion-tokens", type=int, default=192)
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/tap/smoke"))
+    # Downloaded artifacts land at <output-dir>/tap/<run-id>/parquet, so the
+    # default of "outputs" makes the canonical path outputs/tap/<run-id>/parquet.
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--runbook", type=Path, default=DEFAULT_RUNBOOK)
     parser.add_argument("--smoke", action="store_true",
                         help="cheap 1xH100 smoke: 1 state x 2 candidates, forces --gpu-count 1.")
