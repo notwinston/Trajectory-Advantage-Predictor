@@ -589,7 +589,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--pass-rates", type=Path, default=None)
     p.add_argument("--output", type=Path, default=Path("outputs/tap/labels.jsonl"))
     p.add_argument("--model-name", default=BatteryConfig.model_name)
-    p.add_argument("--domain", default="math", choices=("math", "code", "science"))
+    p.add_argument("--domain", default="math", choices=("math", "code", "science", "mmlu"))
     p.add_argument("--device", default="cuda")
     p.add_argument("--dtype", choices=("bfloat16", "float16", "float32"), default="bfloat16")
     p.add_argument("--grpo-steps", type=int, default=4)

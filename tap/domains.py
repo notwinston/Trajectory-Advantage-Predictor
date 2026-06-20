@@ -199,6 +199,37 @@ def _extract_letter(text: str) -> str | None:
     return m[-1].upper() if m else None
 
 
+class MMLUDomain:
+    name = "mmlu"
+    system = "Answer the multiple-choice question. End with 'Answer: <letter>'."
+
+    def load_splits(self, data_dir, *, probe_size, fingerprint_size, seed):
+        from datasets import load_dataset
+        ds = load_dataset("cais/mmlu", "all", split="test")
+        rows = []
+        for i, ex in enumerate(ds):
+            ch = ex.get("choices") or []
+            ans = ex.get("answer")
+            if len(ch) != 4 or ans is None or not (0 <= int(ans) < 4):
+                continue
+            gold = "ABCD"[int(ans)]
+            body = ex["question"].strip() + "\n" + "\n".join(
+                f"{l}) {c}" for l, c in zip("ABCD", ch))
+            rows.append({"id": "mmlu-%05d" % i, "question": body, "answer": gold,
+                         "solution": f"Answer: {gold}"})
+        order = _split_ids(len(rows), seed)
+        rows = [rows[i] for i in order]
+        k = probe_size + fingerprint_size
+        probe, train = rows[:k], rows[k:]
+        return {"train_rows": train,
+                "probes": {"global": probe[:probe_size],
+                           "fingerprint": probe[probe_size:k],
+                           "generic": GENERIC_PROMPTS}}
+
+    def reward(self, text, item):
+        return 1.0 if _extract_letter(text) == item.get("answer", "") else 0.0
+
+
 # Shared generic (non-target) prompts for the KL-drift probe -- domain-neutral text.
 GENERIC_PROMPTS: list[dict[str, Any]] = [
     {"id": "gen-0", "text": "The capital of France is Paris, a city on the river Seine."},
@@ -210,7 +241,8 @@ GENERIC_PROMPTS: list[dict[str, Any]] = [
 ]
 
 
-DOMAINS: dict[str, Domain] = {"math": MathDomain(), "code": CodeDomain(), "science": ScienceDomain()}
+DOMAINS: dict[str, Domain] = {"math": MathDomain(), "code": CodeDomain(),
+                              "science": ScienceDomain(), "mmlu": MMLUDomain()}
 
 
 def get_domain(name: str) -> Domain:

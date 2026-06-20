@@ -120,7 +120,12 @@ def run_on_pod(args, pod_id, repo_root, output_dir, *, reuse=None) -> None:
     log = output_dir / "pod.log"
     log.write_text("", encoding="utf-8")
     _wait_for_ssh(ssh, dest)
-    base.remote(ssh, dest, ["mkdir", "-p", REMOTE_REPO, REMOTE_WORK])
+    # /workspace is root-owned on datacrunch (plain mkdir works) but not writable on
+    # lambdalabs (ubuntu user) -> fall back to sudo mkdir + chown so both providers work.
+    base.remote(ssh, dest, ["bash", "-lc",
+                            f"mkdir -p {REMOTE_REPO} {REMOTE_WORK} 2>/dev/null || "
+                            f"(sudo mkdir -p /workspace && sudo chown -R $(id -u):$(id -g) /workspace && "
+                            f"mkdir -p {REMOTE_REPO} {REMOTE_WORK})"])
     base.upload_repo(ssh, dest, repo_root)
     if reuse is None:
         print("Installing deps...", flush=True)
@@ -149,7 +154,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-price-per-hour", type=float)
     p.add_argument("--disk-size-gb", type=int, default=200)
     p.add_argument("--model-name", default="Qwen/Qwen2.5-Math-1.5B-Instruct")
-    p.add_argument("--domain", default="math", choices=("math", "code", "science"))
+    p.add_argument("--domain", default="math", choices=("math", "code", "science", "mmlu"))
     p.add_argument("--grpo-steps", type=int, default=4)
     p.add_argument("--group-size", type=int, default=8)
     p.add_argument("--temperature", type=float, default=1.0)
