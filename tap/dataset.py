@@ -143,6 +143,24 @@ class TapData:
         return sorted(self.states["chain_id"].unique().tolist())
 
 
+def join_states(states: pd.DataFrame, candidates: pd.DataFrame) -> pd.DataFrame:
+    """Left-join state numeric/_before columns + policy_fingerprint onto candidates.
+
+    Idempotent: if ``candidates`` already carries the joined columns it is
+    returned unchanged (so ``score()`` works on either raw or joined frames).
+    candidates already carry state_id/chain_id/step, so ``step`` is taken from
+    the candidate side.
+    """
+    have = set(candidates.columns)
+    needed = {"policy_fingerprint", *(c for c in STATE_NUMERIC_COLS if c != "step")}
+    if needed.issubset(have):
+        return candidates
+    state_cols = ["state_id", "policy_fingerprint", *[c for c in STATE_NUMERIC_COLS if c != "step"]]
+    state_view = states[state_cols].copy()
+    joined = candidates.merge(state_view, on="state_id", how="left", validate="many_to_one")
+    return joined.reset_index(drop=True)
+
+
 def load_parquets(parquet_dir: str | Path, validate: bool = True) -> TapData:
     """Load the four Parquet files and build the joined candidate frame."""
     directory = Path(parquet_dir)
@@ -157,15 +175,7 @@ def load_parquets(parquet_dir: str | Path, validate: bool = True) -> TapData:
     trajectories = frames["trajectories"]
     history = frames["history"]
 
-    # Join the state numeric/_before columns onto each candidate (state_id key).
-    # candidates already carry state_id, chain_id, step — pull the rest of the
-    # state numerics plus the policy_fingerprint vector.
-    state_cols = ["state_id", "policy_fingerprint", *STATE_NUMERIC_COLS]
-    state_view = states[state_cols].copy()
-    # candidates already has 'step'; avoid a duplicate by dropping it from state side.
-    state_view = state_view.drop(columns=["step"])
-    joined = candidates.merge(state_view, on="state_id", how="left", validate="many_to_one")
-    joined = joined.reset_index(drop=True)
+    joined = join_states(states, candidates)
 
     return TapData(
         states=states,

@@ -155,5 +155,110 @@ class FeaturizeTests(_SynthCase):
         self.assertTrue((b_hist.history == 0).all())
 
 
+# --------------------------------------------------------------------------- #
+# Phase 3 — baselines (finite score for every candidate)
+# --------------------------------------------------------------------------- #
+class BaselineTests(_SynthCase):
+    def test_all_models_finite_for_every_candidate(self):
+        from tap.baselines import make_baselines
+
+        splits = chain_splits(self.data)
+        s = splits[0]
+        models = make_baselines(seed=0)
+        n_test = len(s.test)
+        for name, m in models.items():
+            if m.trainable:
+                m.fit(self.data.states, s.train, self.data.history)
+            scores = m.score(self.data.states, s.test, self.data.history)
+            count = sum(len(v) for v in scores.values())
+            self.assertEqual(count, n_test, f"{name}: {count} != {n_test}")
+            for state_id, cand_map in scores.items():
+                for cid, val in cand_map.items():
+                    self.assertTrue(np.isfinite(val), f"{name} {state_id}/{cid}")
+
+    def test_registry_has_expected_names(self):
+        from tap.baselines import HEURISTIC_NAMES, LEARNED_NAMES, make_baselines
+
+        models = make_baselines()
+        for name in (*LEARNED_NAMES, *HEURISTIC_NAMES):
+            self.assertIn(name, models)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5 — eval invariants
+# --------------------------------------------------------------------------- #
+class EvalTests(_SynthCase):
+    def _per_direction_mtu(self, model_name):
+        from tap import eval as E
+        from tap.baselines import make_baselines
+
+        per = []
+        for s in chain_splits(self.data):
+            m = make_baselines(0)[model_name]
+            if m.trainable:
+                m.fit(self.data.states, s.train, self.data.history)
+            truth = E.build_truth(s.test)
+            per.append(E.evaluate(m.score(self.data.states, s.test, self.data.history), truth))
+        return E.average_directions(per)
+
+    def test_perfect_ranker(self):
+        from tap import eval as E
+
+        per = []
+        for s in chain_splits(self.data):
+            truth = E.build_truth(s.test)
+            scores = {st: dict(truth[st]) for st in truth}  # score == true utility
+            per.append(E.evaluate(scores, truth))
+        agg = E.average_directions(per)
+        self.assertGreater(agg["spearman"], 0.999)
+        self.assertAlmostEqual(agg["top1_regret"], 0.0, places=9)
+        self.assertAlmostEqual(agg["pair_acc"], 1.0, places=9)
+
+    def test_random_zero_lift_random(self):
+        from tap import eval as E
+
+        refs = {
+            "random": self._per_direction_mtu("random")["mean_true_utility"],
+            "reward": self._per_direction_mtu("reward_mean")["mean_true_utility"],
+            "prob": self._per_direction_mtu("geo_mean_prob")["mean_true_utility"],
+        }
+        rnd = E.add_lift(self._per_direction_mtu("random"), refs)
+        self.assertAlmostEqual(rnd["lift_random"], 0.0, places=9)
+        self.assertEqual(set(E.METRIC_COLS) - set(rnd), set())
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 — SmallTAP / training
+# --------------------------------------------------------------------------- #
+class ModelTests(_SynthCase):
+    def test_smalltap_param_budget(self):
+        from tap.model import torch_available
+
+        if not torch_available():
+            self.skipTest("torch unavailable / TAP_NO_TORCH active — sklearn fallback path")
+        from tap.model import SmallTAP
+
+        self.assertLess(SmallTAP().num_params(), 250000)
+
+    def test_tap_train_smoke_and_score(self):
+        from tap.model import torch_available
+        from tap.train import make_tap_model
+
+        splits = chain_splits(self.data)
+        model = make_tap_model("tap", None, epochs=60, seed=0)
+        model.fit(self.data.states, splits[0].train, self.data.history)
+        scores = model.score(self.data.states, splits[0].test, self.data.history)
+        count = sum(len(v) for v in scores.values())
+        self.assertEqual(count, len(splits[0].test))
+        for cand_map in scores.values():
+            for val in cand_map.values():
+                self.assertTrue(np.isfinite(val))
+        if torch_available():
+            il = model.history_["initial_loss"]
+            fl = model.history_["final_loss"]
+            self.assertIsNotNone(il)
+            self.assertLess(fl, 0.95 * il, f"final {fl} !< 0.95*initial {il}")
+
+
 if __name__ == "__main__":
     unittest.main()
