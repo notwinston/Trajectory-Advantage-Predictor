@@ -59,31 +59,50 @@ python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is
 
 
 def build_battery_command(args: argparse.Namespace) -> list[str]:
-    battery = ["python", "-m", "tap.battery",
-               "--data-dir", REMOTE_WORK + "/data",
-               "--output", REMOTE_WORK + "/outputs/labels.jsonl",
-               "--model-name", args.model_name,
-               "--grpo-steps", str(args.grpo_steps),
-               "--group-size", str(args.group_size),
-               "--temperature", str(args.temperature),
-               "--max-new-tokens", str(args.max_new_tokens),
-               "--probe-size", str(args.probe_size),
-               "--probe-k", str(args.probe_k),
-               "--cohort-size", str(args.cohort_size),
-               "--n-random", str(args.n_random),
-               "--n-chains", str(args.n_chains),
-               "--anchors-per-chain", str(args.anchors_per_chain),
-               "--seeds", str(args.seeds),
-               "--lr", str(args.lr)]
+    common = ["python", "-m", "tap.battery",
+              "--data-dir", REMOTE_WORK + "/data",
+              "--model-name", args.model_name,
+              "--grpo-steps", str(args.grpo_steps),
+              "--group-size", str(args.group_size),
+              "--temperature", str(args.temperature),
+              "--max-new-tokens", str(args.max_new_tokens),
+              "--probe-size", str(args.probe_size),
+              "--probe-k", str(args.probe_k),
+              "--cohort-size", str(args.cohort_size),
+              "--n-random", str(args.n_random),
+              "--n-chains", str(args.n_chains),
+              "--anchors-per-chain", str(args.anchors_per_chain),
+              "--seeds", str(args.seeds),
+              "--seed", str(args.seed),
+              "--lr", str(args.lr)]
     if args.max_cohorts:
-        battery += ["--max-cohorts", str(args.max_cohorts)]
+        common += ["--max-cohorts", str(args.max_cohorts)]
     if not args.acc_eval:
-        battery += ["--no-acc-eval"]
-    pieces = [f"cd {shlex.quote(REMOTE_WORK)}", ". .venv/bin/activate",
-              'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"',
-              f"export PYTHONPATH={shlex.quote(REMOTE_REPO)}:${{PYTHONPATH:-}}",
-              f"export HF_HOME={shlex.quote(REMOTE_WORK + '/hf_cache')}",
-              shlex.join(battery)]
+        common += ["--no-acc-eval"]
+    out = REMOTE_WORK + "/outputs"
+    env = [f"cd {shlex.quote(REMOTE_WORK)}", ". .venv/bin/activate",
+           'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"',
+           f"export PYTHONPATH={shlex.quote(REMOTE_REPO)}:${{PYTHONPATH:-}}",
+           f"export HF_HOME={shlex.quote(REMOTE_WORK + '/hf_cache')}",
+           f"mkdir -p {shlex.quote(out)}"]  # parallel shards redirect into outputs/ before python runs
+
+    G = max(1, args.gpu_count)
+    total = args.shard_total or G          # global #shards across all pods
+    base = args.shard_base                 # this pod's first global shard index
+    if total > 1:
+        # warm the data cache ONCE so the G parallel shard processes don't race on split creation
+        pycode = ('from pathlib import Path; from tap.data_probes import prepare_probes; '
+                  f'prepare_probes(Path("{REMOTE_WORK}/data"), probe_size={args.probe_size})')
+        prewarm = "python -c " + shlex.quote(pycode)
+        cstr = shlex.join(common)
+        loop = (f'pids=""; for i in $(seq 0 {G - 1}); do s=$(({base}+i)); '
+                f'CUDA_VISIBLE_DEVICES=$i {cstr} --shard $s/{total} '
+                f'--output {out}/labels_shard_$s.jsonl > {out}/shard_$s.log 2>&1 & pids="$pids $!"; done; '
+                f'for p in $pids; do wait $p; done; '
+                f'cat {out}/labels_shard_*.jsonl > {out}/labels.jsonl; wc -l {out}/labels.jsonl')
+        pieces = env + [prewarm, loop]
+    else:
+        pieces = env + [shlex.join(common + ["--output", out + "/labels.jsonl"])]
     return ["bash", "-lc", " && ".join(pieces)]
 
 
@@ -122,6 +141,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--offer-id")
     p.add_argument("--gpu-type", default=base.DEFAULT_GPU_TYPE)
     p.add_argument("--gpu-count", type=int, default=1)
+    p.add_argument("--shard-base", type=int, default=0, help="this pod's first global shard index")
+    p.add_argument("--shard-total", type=int, default=0, help="total shards across ALL pods (0 => gpu-count)")
     p.add_argument("--ssh-key", type=Path, default=Path("~/.ssh/id_ed25519"))
     p.add_argument("--spot", action="store_true")
     p.add_argument("--max-price-per-hour", type=float)
@@ -138,6 +159,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--n-chains", type=int, default=1)
     p.add_argument("--anchors-per-chain", type=int, default=1)
     p.add_argument("--seeds", type=int, default=1)
+    p.add_argument("--seed", type=int, default=0, help="cohort-generation RNG seed (explicit, avoids --seeds prefix clash)")
     p.add_argument("--max-cohorts", type=int, default=0)
     p.add_argument("--no-acc-eval", dest="acc_eval", action="store_false",
                    help="NLL-only gate (skip slow greedy accuracy eval)")

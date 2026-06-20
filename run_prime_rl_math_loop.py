@@ -272,7 +272,8 @@ def run_on_pod(args: argparse.Namespace, pod_id: str, repo_root: Path, output_di
 
 def create_pod(args: argparse.Namespace) -> str:
     if args.offer_id:
-        create = ["prime", "pods", "create", "--id", args.offer_id]
+        create = ["prime", "pods", "create", "--id", args.offer_id,
+                  "--disk-size", str(args.disk_size_gb or 200)]
     else:
         resources = prime_json(
             "availability",
