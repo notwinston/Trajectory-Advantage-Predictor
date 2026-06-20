@@ -27,6 +27,7 @@ import json
 import os
 import random
 import shlex
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,61 @@ def worker_gpu_ids(gpu_count: int) -> list[int]:
     if gpu_count <= 1:
         return []
     return list(range(1, gpu_count))
+
+
+def cleanup_cuda_if_available(device: str = "cuda") -> None:
+    """Best-effort CUDA cache cleanup between local probe/sketch work and vLLM."""
+    try:
+        import torch
+    except Exception:
+        return
+    try:
+        from math_loop.probe_loss import _cleanup_torch_cuda
+
+        _cleanup_torch_cuda(torch, device)
+    except Exception:
+        return
+
+
+def prune_checkpoint_weights(checkpoint: Path, output_dir: Path) -> bool:
+    """Delete the containing weights directory for a checkpoint inside output_dir."""
+    try:
+        resolved_output = output_dir.resolve()
+        resolved_checkpoint = checkpoint.resolve()
+    except OSError:
+        return False
+    if resolved_output not in (resolved_checkpoint, *resolved_checkpoint.parents):
+        return False
+    weights_dir: Path | None = None
+    for candidate in (resolved_checkpoint, *resolved_checkpoint.parents):
+        if candidate.name == "weights":
+            weights_dir = candidate
+            break
+    if weights_dir is None or not weights_dir.exists():
+        return False
+    shutil.rmtree(weights_dir)
+    return True
+
+
+def prune_prime_rl_checkpoints(run_dir: Path, output_dir: Path) -> bool:
+    """Delete bulky prime-rl checkpoint trees for a completed branch/state run."""
+
+    try:
+        resolved_output = output_dir.resolve()
+        resolved_run = run_dir.resolve()
+    except OSError:
+        return False
+    if resolved_output not in (resolved_run, *resolved_run.parents):
+        return False
+    removed = False
+    for checkpoint_dir in (
+        resolved_run / "checkpoints",
+        resolved_run / "run_default" / "checkpoints",
+    ):
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
+            removed = True
+    return removed
 
 
 def _prompt_ids_for_plan(args: argparse.Namespace) -> list[str]:
@@ -266,6 +322,29 @@ def _scalar_reward(value: Any) -> float:
         return 0.0
 
 
+def _rollout_sequence_length(row: dict[str, Any], completion: Any) -> int:
+    for key in (
+        "completion_tokens",
+        "num_completion_tokens",
+        "sequence_length",
+        "completion_token_count",
+    ):
+        try:
+            value = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    for key in ("completion_token_ids", "token_ids", "tokens", "token_logprobs"):
+        value = row.get(key)
+        if isinstance(value, list) and value:
+            return len(value)
+    text = str(completion or "")
+    if not text:
+        return 0
+    return max(1, len(text.split()), len(text) // 4)
+
+
 def _map_rollout_row(row: dict[str, Any], index: int, candidate_id: str) -> dict[str, Any]:
     """Map one prime-rl rollout dict to a features._trajectory_row input.
 
@@ -286,7 +365,7 @@ def _map_rollout_row(row: dict[str, Any], index: int, candidate_id: str) -> dict
         prompt = " ".join(
             str(m.get("content", "")) if isinstance(m, dict) else str(m) for m in prompt
         )
-    seq_len = row.get("completion_tokens", row.get("num_completion_tokens", row.get("sequence_length", 0)))
+    seq_len = _rollout_sequence_length(row, completion)
     return {
         "trajectory_id": str(row.get("trajectory_id", f"{candidate_id}-t{index}")),
         "prompt_id": str(row.get("prompt_id", row.get("id", f"{candidate_id}-p{index}"))),
@@ -300,7 +379,7 @@ def _map_rollout_row(row: dict[str, Any], index: int, candidate_id: str) -> dict
         ),
         "reward_format": _scalar_reward(metrics.get("format_reward", metrics.get("format", 0.0))),
         "advantage": _scalar_reward(row.get("advantage", 0.0)),
-        "sequence_length": int(seq_len or 0),
+        "sequence_length": seq_len,
     }
 
 
@@ -361,7 +440,9 @@ def _write_branch_config(
             output_dir=output_dir,
             split_path=split_path,
             max_steps=1,
-            batch_size=args.prompts_per_candidate,
+            # prime-rl's orchestrator batch_size is total rollout samples, and
+            # must be divisible by env group_size / samples per problem.
+            batch_size=args.prompts_per_candidate * args.completions_per_prompt,
             group_size=args.completions_per_prompt,
             seq_len=args.seq_len,
             max_completion_tokens=args.max_completion_tokens,
@@ -472,6 +553,7 @@ def run_controller(args: argparse.Namespace) -> None:
                 chain, state_index, args.candidates_per_state, args.seed
             )
             branch_ckpts: dict[int, Path] = {}
+            previous_state_ckpt = state_ckpt
             for cand in by_state[(chain, state_index)]:
                 k = cand.candidate_index
                 prompt_rows = [by_id[pid] for pid in cand.prompt_ids if pid in by_id]
@@ -485,6 +567,7 @@ def run_controller(args: argparse.Namespace) -> None:
                     run_name=f"tap-{cand.candidate_id}", args=args,
                 )
                 print(f"[tap] branch {cand.candidate_id} (weights-only from {state_ckpt})", flush=True)
+                cleanup_cuda_if_available()
                 run_command(rl_command(args, branch_cfg),
                             log_path=log_dir / "branches" / f"{cand.candidate_id}.log")
                 bsteps = checkpoint_steps(branch_out)
@@ -508,6 +591,11 @@ def run_controller(args: argparse.Namespace) -> None:
                 )
                 branch_ckpts[k] = branch_ckpt
                 print(f"[tap] labeled {cand.candidate_id} ({len(rollouts)} rollouts)", flush=True)
+                if prune_prime_rl_checkpoints(branch_out, output_dir):
+                    print(f"[tap] pruned branch trainer checkpoints for {cand.candidate_id}", flush=True)
+                cleanup_cuda_if_available()
+                if k != selected and prune_checkpoint_weights(branch_ckpt, output_dir):
+                    print(f"[tap] pruned non-selected branch weights for {cand.candidate_id}", flush=True)
 
             adam_first, adam_second = _optimizer_moment_norms(state_ckpt)
             state_json = {
@@ -534,6 +622,8 @@ def run_controller(args: argparse.Namespace) -> None:
 
             # Advance the main chain with the SEEDED-RANDOM candidate (spec).
             state_ckpt = branch_ckpts.get(selected, state_ckpt)
+            if state_ckpt != previous_state_ckpt and prune_checkpoint_weights(previous_state_ckpt, output_dir):
+                print(f"[tap] pruned superseded state weights for {state_id}", flush=True)
             history.append({
                 "historical_candidate_id": f"{state_id}-{selected}",
                 "candidate_id": f"{state_id}-{selected}",
@@ -546,6 +636,8 @@ def run_controller(args: argparse.Namespace) -> None:
                 state_ckpt=state_ckpt,
                 history=history,
             )
+        if state_ckpt is not None and prune_checkpoint_weights(state_ckpt, output_dir):
+            print(f"[tap] pruned final checkpoint weights for chain {chain}", flush=True)
 
     print(f"[tap] collection complete; raw artifacts under {raw_root}", flush=True)
 

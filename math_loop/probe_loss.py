@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
@@ -34,6 +35,14 @@ def _torch_dtype(torch: Any, dtype: str):
         "float16": torch.float16,
         "float32": torch.float32,
     }[dtype]
+
+
+def _cleanup_torch_cuda(torch: Any, device: str) -> None:
+    """Release GPU allocations before prime-rl/vLLM starts in another process."""
+    gc.collect()
+    if str(device).startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 
 def load_model_and_tokenizer(
@@ -124,51 +133,58 @@ def compute_probe_loss(
     rows = read_jsonl(split_path)
     if not rows:
         raise ValueError(f"probe split is empty: {split_path}")
-    model, tokenizer = load_model_and_tokenizer(
-        checkpoint,
-        model_name=model_name,
-        device=device,
-        dtype=dtype,
-    )
-    encoded = [
-        item
-        for item in (
-            _encode_example(tokenizer, row, max_length=max_length, system_prompt=system_prompt)
-            for row in rows
+    model = None
+    tokenizer = None
+    try:
+        model, tokenizer = load_model_and_tokenizer(
+            checkpoint,
+            model_name=model_name,
+            device=device,
+            dtype=dtype,
         )
-        if item is not None
-    ]
-    if not encoded:
-        raise ValueError("all probe examples were truncated before target tokens")
+        encoded = [
+            item
+            for item in (
+                _encode_example(tokenizer, row, max_length=max_length, system_prompt=system_prompt)
+                for row in rows
+            )
+            if item is not None
+        ]
+        if not encoded:
+            raise ValueError("all probe examples were truncated before target tokens")
 
-    pad_token_id = tokenizer.pad_token_id
-    total_loss = 0.0
-    total_tokens = 0
-    for batch in _batches(encoded, batch_size):
-        width = max(len(item["input_ids"]) for item in batch)
-        input_ids = []
-        labels = []
-        attention_mask = []
-        for item in batch:
-            pad = width - len(item["input_ids"])
-            input_ids.append(item["input_ids"] + [pad_token_id] * pad)
-            labels.append(item["labels"] + [-100] * pad)
-            attention_mask.append([1] * len(item["input_ids"]) + [0] * pad)
-        input_tensor = torch.tensor(input_ids, dtype=torch.long, device=device)
-        label_tensor = torch.tensor(labels, dtype=torch.long, device=device)
-        mask_tensor = torch.tensor(attention_mask, dtype=torch.long, device=device)
-        token_count = int((label_tensor != -100).sum().item())
-        with torch.no_grad():
-            output = model(input_ids=input_tensor, attention_mask=mask_tensor, labels=label_tensor)
-        total_loss += float(output.loss.item()) * token_count
-        total_tokens += token_count
+        pad_token_id = tokenizer.pad_token_id
+        total_loss = 0.0
+        total_tokens = 0
+        for batch in _batches(encoded, batch_size):
+            width = max(len(item["input_ids"]) for item in batch)
+            input_ids = []
+            labels = []
+            attention_mask = []
+            for item in batch:
+                pad = width - len(item["input_ids"])
+                input_ids.append(item["input_ids"] + [pad_token_id] * pad)
+                labels.append(item["labels"] + [-100] * pad)
+                attention_mask.append([1] * len(item["input_ids"]) + [0] * pad)
+            input_tensor = torch.tensor(input_ids, dtype=torch.long, device=device)
+            label_tensor = torch.tensor(labels, dtype=torch.long, device=device)
+            mask_tensor = torch.tensor(attention_mask, dtype=torch.long, device=device)
+            token_count = int((label_tensor != -100).sum().item())
+            with torch.no_grad():
+                output = model(input_ids=input_tensor, attention_mask=mask_tensor, labels=label_tensor)
+            total_loss += float(output.loss.item()) * token_count
+            total_tokens += token_count
+            del input_tensor, label_tensor, mask_tensor, output
 
-    return ProbeLossResult(
-        checkpoint=str(checkpoint),
-        examples=len(encoded),
-        tokens=total_tokens,
-        nll=total_loss / max(total_tokens, 1),
-    )
+        return ProbeLossResult(
+            checkpoint=str(checkpoint),
+            examples=len(encoded),
+            tokens=total_tokens,
+            nll=total_loss / max(total_tokens, 1),
+        )
+    finally:
+        del model, tokenizer
+        _cleanup_torch_cuda(torch, device)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

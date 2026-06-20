@@ -20,6 +20,7 @@ class AnswerTests(unittest.TestCase):
 
     def test_non_thinking_prompt_has_no_think(self):
         self.assertIn("/no_think", NON_THINKING_SYSTEM_PROMPT)
+        self.assertIn("\\boxed{...}", NON_THINKING_SYSTEM_PROMPT)
 
 
 class DataTests(unittest.TestCase):

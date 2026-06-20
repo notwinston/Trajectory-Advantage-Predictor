@@ -89,6 +89,18 @@ type = "custom"
 import_path = "math_loop.advantage.normalized_advantage"
 kwargs = {{ eps = 1e-8 }}
 
+[[orchestrator.post_batch_filters]]
+type = "gibberish"
+enforce = false
+
+[[orchestrator.post_batch_filters]]
+type = "repetition"
+enforce = false
+
+[[orchestrator.post_batch_filters]]
+type = "zero_advantage"
+enforce = false
+
 [orchestrator.model.lora]
 name = {_toml_str(lora_name)}
 rank = {spec.lora_rank}

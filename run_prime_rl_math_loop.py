@@ -443,6 +443,17 @@ mkdir -p {REMOTE_WORK}
     return ["bash", "-lc", script]
 
 
+def build_prepare_workspace_command() -> list[str]:
+    script = f"""
+set -euo pipefail
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else SUDO=""; fi
+$SUDO mkdir -p /workspace
+$SUDO chown "$(id -un):$(id -gn)" /workspace 2>/dev/null || true
+mkdir -p {shlex.quote(REMOTE_REPO)} {shlex.quote(REMOTE_WORK)}
+"""
+    return ["bash", "-lc", script]
+
+
 def _remote_env_prefix() -> list[str]:
     return [
         f"cd {shlex.quote(REMOTE_PRIME_RL)}",
@@ -473,6 +484,10 @@ def build_preflight_command() -> list[str]:
 
 def remote_run_dir(args: argparse.Namespace) -> str:
     return f"{REMOTE_WORK}/outputs/tap/{args.run_id}"
+
+
+def local_run_dir(output_dir: Path, args: argparse.Namespace) -> Path:
+    return output_dir / "tap" / args.run_id
 
 
 def build_collection_command(args: argparse.Namespace) -> list[str]:
@@ -510,6 +525,7 @@ def build_collection_command(args: argparse.Namespace) -> list[str]:
 # Repo paths excluded from the on-pod upload (secrets, caches, large outputs).
 UPLOAD_EXCLUDES = [".git", "outputs", "data/math_loop", ".venv", "pod_id.txt",
                    "private_key.pem", "public_key.pem"]
+OUTPUT_DOWNLOAD_EXCLUDES = ["--exclude", "*/weights/**", "--exclude", "*/checkpoints/**"]
 
 
 def rsync_upload_command(ssh: list[str], destination: str, repo_root: Path) -> list[str]:
@@ -533,7 +549,8 @@ def tar_upload_commands(ssh: list[str], destination: str, repo_root: Path) -> tu
 
 def tar_download_commands(ssh: list[str], destination: str, output_dir: Path) -> tuple[list[str], list[str]]:
     remote_cmd = [*ssh, destination,
-                  f"tar czf - -C {shlex.quote(REMOTE_WORK + '/outputs')} ."]
+                  f"tar czf - --exclude='*/weights/*' --exclude='*/checkpoints/*' "
+                  f"-C {shlex.quote(REMOTE_WORK + '/outputs')} ."]
     local = ["tar", "xzf", "-", "-C", str(output_dir)]
     return remote_cmd, local
 
@@ -564,12 +581,65 @@ def upload_repo(ssh: list[str], destination: str, repo_root: Path) -> None:
 def download_outputs(ssh: list[str], destination: str, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     if shutil.which("rsync"):
-        run(["rsync", "-az", "-e", shlex.join(ssh),
+        run(["rsync", "-az", *OUTPUT_DOWNLOAD_EXCLUDES, "-e", shlex.join(ssh),
              f"{destination}:{REMOTE_WORK}/outputs/", f"{output_dir}/"])
         return
     producer, consumer = tar_download_commands(ssh, destination, output_dir)
     print("[transport] rsync absent; downloading via tar-over-ssh", flush=True)
     _run_pipe(producer, consumer)
+
+
+def upload_resume_outputs(ssh: list[str], destination: str, output_dir: Path, args: argparse.Namespace) -> None:
+    """Upload a previously downloaded run directory so tap_controller can resume.
+
+    The repo upload intentionally excludes ``outputs``. This function handles the
+    portable-checkpoint case: copy ``outputs/tap/<run_id>`` into the same remote
+    path used by the launcher before collection starts.
+    """
+    local = local_run_dir(output_dir, args)
+    if not local.exists():
+        return
+    remote_dir = remote_run_dir(args)
+    print(f"Uploading existing run checkpoint tree for resume: {local} -> {remote_dir}", flush=True)
+    remote(ssh, destination, ["mkdir", "-p", remote_dir])
+    if shutil.which("rsync"):
+        run(["rsync", "-az", "-e", shlex.join(ssh), f"{local}/", f"{destination}:{remote_dir}/"])
+        return
+    producer = ["tar", "czf", "-", "-C", str(local), "."]
+    consumer = [*ssh, destination, f"tar xzf - -C {shlex.quote(remote_dir)}"]
+    _run_pipe(producer, consumer)
+
+
+class PeriodicOutputSync(threading.Thread):
+    """Best-effort incremental sync of remote outputs back to local disk."""
+
+    def __init__(self, ssh: list[str], destination: str, output_dir: Path, interval_seconds: float):
+        super().__init__(name="tap-output-sync", daemon=True)
+        self.ssh = ssh
+        self.destination = destination
+        self.output_dir = output_dir
+        self.interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def sync_once(self) -> None:
+        try:
+            download_outputs(self.ssh, self.destination, self.output_dir)
+        except Exception as exc:  # noqa: BLE001 - checkpoint sync should not kill collection
+            print(f"[sync] output sync failed: {exc!r}", file=sys.stderr, flush=True)
+
+    def run(self) -> None:
+        if self.interval_seconds <= 0:
+            return
+        if not shutil.which("rsync"):
+            print("[sync] rsync not available locally; periodic sync disabled (final tar download still runs).",
+                  file=sys.stderr, flush=True)
+            return
+        while not self._stop_event.wait(self.interval_seconds):
+            print("[sync] downloading remote checkpoint/output tree...", flush=True)
+            self.sync_once()
 
 
 def validate_smoke_outputs(output_dir: Path, args: argparse.Namespace) -> None:
@@ -598,8 +668,9 @@ def run_on_pod(args: argparse.Namespace, pod_id: str, repo_root: Path, output_di
     log.write_text("", encoding="utf-8")
 
     print("Uploading source...", flush=True)
-    remote(ssh, destination, ["mkdir", "-p", REMOTE_REPO, REMOTE_WORK])
+    remote(ssh, destination, build_prepare_workspace_command())
     upload_repo(ssh, destination, repo_root)
+    upload_resume_outputs(ssh, destination, output_dir, args)
 
     print("Installing prime-rl (pinned) on the pod...", flush=True)
     remote(ssh, destination, build_bootstrap_command(args.prime_rl_commit),
@@ -608,9 +679,17 @@ def run_on_pod(args: argparse.Namespace, pod_id: str, repo_root: Path, output_di
     print("Running on-pod pre-flight (verifiers + AdvantageOutputs import)...", flush=True)
     remote(ssh, destination, build_preflight_command(), timeout=600, log=log, stream=True)
 
+    syncer = PeriodicOutputSync(ssh, destination, output_dir, args.sync_interval_seconds)
     print("Running TAP collection + featurization...", flush=True)
-    remote(ssh, destination, build_collection_command(args),
-           timeout=args.remote_timeout, log=log, stream=True)
+    try:
+        syncer.start()
+        remote(ssh, destination, build_collection_command(args),
+               timeout=args.remote_timeout, log=log, stream=True)
+    finally:
+        syncer.stop()
+        syncer.join(timeout=5)
+        print("Syncing latest remote outputs/checkpoints...", flush=True)
+        syncer.sync_once()
 
     print("Downloading outputs...", flush=True)
     download_outputs(ssh, destination, output_dir)
@@ -718,7 +797,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--grpo-beta", type=float, default=0.04)
     parser.add_argument("--seq-len", type=int, default=4096)
-    parser.add_argument("--max-completion-tokens", type=int, default=192)
+    parser.add_argument("--max-completion-tokens", type=int, default=768)
     # Downloaded artifacts land at <output-dir>/tap/<run-id>/parquet, so the
     # default of "outputs" makes the canonical path outputs/tap/<run-id>/parquet.
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
@@ -727,6 +806,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="cheap 1xH100 smoke: 1 state x 2 candidates, forces --gpu-count 1.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--remote-timeout", type=int, default=6 * 3600)
+    parser.add_argument("--sync-interval-seconds", type=float, default=600.0,
+                        help="periodically rsync remote outputs/checkpoints locally; 0 disables")
     # --keep-pod is deliberately NOT defined: this wave forbids keeping pods.
     return parser.parse_args(argv)
 

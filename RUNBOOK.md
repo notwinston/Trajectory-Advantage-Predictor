@@ -98,7 +98,7 @@ VIRTUAL_ENV=$PWD/.venv ~/.local/bin/uv run --no-project \
   python -m tap.run_all --parquet-dir "$PARQUET_DIR" --out outputs/tap_report_real
 ```
 
-`tap.run_all` does the chain-0↔chain-1 cross-split, trains SmallTAP + the ridge /
+`tap.run_all` does leave-one-chain-out splits, trains SmallTAP + the ridge /
 GBT / no-history / numeric-only / candidate-only baselines and the heuristic
 selectors, and writes `results.csv` + `report.{md,tex,pdf}`. The headline comparison
 is TAP vs reward-only vs probability-only vs random.

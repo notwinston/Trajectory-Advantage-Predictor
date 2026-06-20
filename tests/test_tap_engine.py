@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import math
+import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from math_loop.data import (
@@ -123,6 +126,57 @@ class ProbeMathTests(unittest.TestCase):
         self.assertEqual(fp[16:], [0.5] * 16)
 
 
+class ProbeCleanupTests(unittest.TestCase):
+    def test_cuda_cleanup_releases_cache_for_cuda_device(self):
+        from math_loop.probe_loss import _cleanup_torch_cuda
+
+        calls = []
+
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def empty_cache():
+                calls.append("empty_cache")
+
+            @staticmethod
+            def ipc_collect():
+                calls.append("ipc_collect")
+
+        class FakeTorch:
+            cuda = FakeCuda()
+
+        _cleanup_torch_cuda(FakeTorch(), "cuda")
+        self.assertEqual(calls, ["empty_cache", "ipc_collect"])
+
+    def test_cuda_cleanup_skips_cpu_device(self):
+        from math_loop.probe_loss import _cleanup_torch_cuda
+
+        calls = []
+
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                calls.append("is_available")
+                return True
+
+            @staticmethod
+            def empty_cache():
+                calls.append("empty_cache")
+
+            @staticmethod
+            def ipc_collect():
+                calls.append("ipc_collect")
+
+        class FakeTorch:
+            cuda = FakeCuda()
+
+        _cleanup_torch_cuda(FakeTorch(), "cpu")
+        self.assertEqual(calls, [])
+
+
 class LeakageGuardTests(unittest.TestCase):
     def test_math500_leakage_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -183,6 +237,36 @@ class BranchPrimitiveTests(unittest.TestCase):
             self.assertTrue((cand_dir / "probe_after.json").exists())
             self.assertTrue((cand_dir / "grad_unavailable.flag").exists())
 
+    def test_gradient_sketch_cleans_cuda_on_return(self):
+        cleanup_calls = []
+
+        class FakeModel:
+            def train(self):
+                return None
+
+        fake_torch = types.ModuleType("torch")
+        fake_numpy = types.ModuleType("numpy")
+
+        with (
+            mock.patch.dict(sys.modules, {"numpy": fake_numpy, "torch": fake_torch}),
+            mock.patch(
+                "math_loop.probe_loss.load_model_and_tokenizer",
+                return_value=(FakeModel(), object()),
+            ),
+            mock.patch(
+                "math_loop.probe_loss._cleanup_torch_cuda",
+                side_effect=lambda torch, device: cleanup_calls.append((torch, device)),
+            ),
+        ):
+            sketch = branch.compute_lora_gradient_sketch(
+                Path("/tmp/checkpoint"),
+                [],
+                device="cuda",
+            )
+
+        self.assertEqual(sketch, [0.0] * 64)
+        self.assertEqual(cleanup_calls, [(fake_torch, "cuda")])
+
 
 class ScheduleTests(unittest.TestCase):
     def test_tap_schedule_shape(self):
@@ -205,6 +289,148 @@ class ScheduleTests(unittest.TestCase):
         a = build_tap_schedule(ids, seed=1729)
         b = build_tap_schedule(ids, seed=1729)
         self.assertEqual([c.prompt_ids for c in a], [c.prompt_ids for c in b])
+
+
+class TapControllerConfigTests(unittest.TestCase):
+    def test_prime_rl_batch_size_is_total_samples(self):
+        from argparse import Namespace
+
+        from math_loop.tap_controller import _write_branch_config
+
+        args = Namespace(
+            prompts_per_candidate=2,
+            completions_per_prompt=4,
+            seq_len=4096,
+            max_completion_tokens=192,
+            lora_rank=16,
+            learning_rate=1e-5,
+            gpu_count=2,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _write_branch_config(
+                root / "branch.toml",
+                output_dir=root / "out",
+                split_path=root / "split.jsonl",
+                model_name="Qwen/Qwen3-8B",
+                renderer="default",
+                run_name="test",
+                args=args,
+            )
+            text = cfg.read_text()
+        self.assertIn("batch_size = 8", text)
+        self.assertIn("group_size = 4", text)
+
+    def test_zero_advantage_filter_is_monitor_only(self):
+        from argparse import Namespace
+
+        from math_loop.tap_controller import _write_branch_config
+
+        args = Namespace(
+            prompts_per_candidate=2,
+            completions_per_prompt=4,
+            seq_len=4096,
+            max_completion_tokens=192,
+            lora_rank=16,
+            learning_rate=1e-5,
+            gpu_count=2,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = _write_branch_config(
+                root / "branch.toml",
+                output_dir=root / "out",
+                split_path=root / "split.jsonl",
+                model_name="Qwen/Qwen3-8B",
+                renderer="default",
+                run_name="test",
+                args=args,
+            )
+            text = cfg.read_text()
+        self.assertIn('type = "zero_advantage"\nenforce = false', text)
+
+    def test_controller_cuda_cleanup_hook_is_deferred_and_best_effort(self):
+        from math_loop.tap_controller import cleanup_cuda_if_available
+
+        cleanup_calls = []
+        fake_torch = types.ModuleType("torch")
+        with (
+            mock.patch.dict(sys.modules, {"torch": fake_torch}),
+            mock.patch(
+                "math_loop.probe_loss._cleanup_torch_cuda",
+                side_effect=lambda torch, device: cleanup_calls.append((torch, device)),
+            ),
+        ):
+            cleanup_cuda_if_available("cuda")
+
+        self.assertEqual(cleanup_calls, [(fake_torch, "cuda")])
+
+    def test_prune_checkpoint_weights_only_inside_output_dir(self):
+        from math_loop.tap_controller import prune_checkpoint_weights
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "outputs"
+            checkpoint = output_dir / "tap" / "run" / "branches" / "b0" / "weights" / "step_1"
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "model.safetensors").write_text("large", encoding="utf-8")
+            self.assertTrue(prune_checkpoint_weights(checkpoint, output_dir))
+            self.assertFalse((checkpoint.parent).exists())
+
+            outside = root / "outside" / "weights" / "step_1"
+            outside.mkdir(parents=True)
+            (outside / "model.safetensors").write_text("keep", encoding="utf-8")
+            self.assertFalse(prune_checkpoint_weights(outside, output_dir))
+            self.assertTrue(outside.exists())
+
+    def test_prune_prime_rl_checkpoints_only_inside_output_dir(self):
+        from math_loop.tap_controller import prune_prime_rl_checkpoints
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "outputs"
+            branch_out = output_dir / "tap" / "run" / "branches" / "state_0-0" / "cand_0"
+            checkpoint_dir = branch_out / "checkpoints" / "step_1"
+            checkpoint_dir.mkdir(parents=True)
+            (checkpoint_dir / "trainer.pt").write_text("large", encoding="utf-8")
+            weights_dir = branch_out / "weights" / "step_1"
+            weights_dir.mkdir(parents=True)
+            (weights_dir / "model.safetensors").write_text("keep", encoding="utf-8")
+
+            self.assertTrue(prune_prime_rl_checkpoints(branch_out, output_dir))
+            self.assertFalse((branch_out / "checkpoints").exists())
+            self.assertTrue(weights_dir.exists())
+
+            outside = root / "outside"
+            (outside / "checkpoints").mkdir(parents=True)
+            self.assertFalse(prune_prime_rl_checkpoints(outside, output_dir))
+            self.assertTrue((outside / "checkpoints").exists())
+
+    def test_output_download_excludes_weight_and_checkpoint_trees(self):
+        from run_prime_rl_math_loop import download_outputs
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch("run_prime_rl_math_loop.shutil.which", return_value="/usr/bin/rsync"),
+            mock.patch("run_prime_rl_math_loop.run") as run_mock,
+        ):
+            download_outputs(["ssh"], "root@example", Path(tmp))
+        command = run_mock.call_args.args[0]
+        self.assertIn("--exclude", command)
+        self.assertIn("*/weights/**", command)
+        self.assertIn("*/checkpoints/**", command)
+
+    def test_rollout_sequence_length_falls_back_when_prime_omits_tokens(self):
+        from math_loop.tap_controller import _map_rollout_row
+
+        row = {
+            "prompt": "What is 1+1?",
+            "completion": "Reason briefly. \\boxed{2}",
+            "reward": 1.0,
+        }
+
+        mapped = _map_rollout_row(row, 0, "0-0-0")
+        self.assertGreater(mapped["sequence_length"], 0)
 
 
 class FeatureExtractorTests(unittest.TestCase):

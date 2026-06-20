@@ -144,6 +144,7 @@ def teacher_forced_probe_nll(
     rows to a temporary split. Torch lives entirely inside ``compute_probe_loss``.
     """
     import json
+    import os
     import tempfile
 
     from math_loop.probe_loss import compute_probe_loss
@@ -152,15 +153,21 @@ def teacher_forced_probe_nll(
         for row in probe_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
         split_path = Path(handle.name)
-    result = compute_probe_loss(
-        checkpoint,
-        split_path,
-        model_name=model_name,
-        max_length=max_length,
-        device=device,
-        dtype=dtype,
-    )
-    return float(result.nll)
+    try:
+        result = compute_probe_loss(
+            checkpoint,
+            split_path,
+            model_name=model_name,
+            max_length=max_length,
+            device=device,
+            dtype=dtype,
+        )
+        return float(result.nll)
+    finally:
+        try:
+            os.unlink(split_path)
+        except FileNotFoundError:
+            pass
 
 
 def generic_incremental_kl(
@@ -181,28 +188,36 @@ def generic_incremental_kl(
     """
     import torch  # noqa: F401  (deferred — GPU only)
 
-    from math_loop.probe_loss import load_model_and_tokenizer
+    from math_loop.probe_loss import _cleanup_torch_cuda, load_model_and_tokenizer
 
-    base_model, tokenizer = load_model_and_tokenizer(
-        base_checkpoint, model_name=model_name, device=device, dtype=dtype
-    )
-    branch_model, _ = load_model_and_tokenizer(
-        branch_checkpoint, model_name=model_name, device=device, dtype=dtype
-    )
-    kls: list[float] = []
-    for row in generic_prompts:
-        prompt = row.get("prompt") or row.get("question") or row.get("problem") or ""
-        enc = tokenizer(prompt, return_tensors="pt").to(device)
-        with torch.no_grad():
-            gen = base_model.generate(
-                **enc, max_new_tokens=max_new_tokens, do_sample=False
-            )
-            base_out = base_model(gen)
-            branch_out = branch_model(gen)
-        base_logits = base_out.logits[0].float().tolist()
-        branch_logits = branch_out.logits[0].float().tolist()
-        kls.append(sequence_kl(base_logits, branch_logits))
-    return sum(kls) / max(len(kls), 1)
+    base_model = None
+    branch_model = None
+    tokenizer = None
+    try:
+        base_model, tokenizer = load_model_and_tokenizer(
+            base_checkpoint, model_name=model_name, device=device, dtype=dtype
+        )
+        branch_model, _ = load_model_and_tokenizer(
+            branch_checkpoint, model_name=model_name, device=device, dtype=dtype
+        )
+        kls: list[float] = []
+        for row in generic_prompts:
+            prompt = row.get("prompt") or row.get("question") or row.get("problem") or ""
+            enc = tokenizer(prompt, return_tensors="pt").to(device)
+            with torch.no_grad():
+                gen = base_model.generate(
+                    **enc, max_new_tokens=max_new_tokens, do_sample=False
+                )
+                base_out = base_model(gen)
+                branch_out = branch_model(gen)
+            base_logits = base_out.logits[0].float().tolist()
+            branch_logits = branch_out.logits[0].float().tolist()
+            kls.append(sequence_kl(base_logits, branch_logits))
+            del enc, gen, base_out, branch_out
+        return sum(kls) / max(len(kls), 1)
+    finally:
+        del base_model, branch_model, tokenizer
+        _cleanup_torch_cuda(torch, device)
 
 
 def compute_policy_fingerprint(
@@ -218,29 +233,36 @@ def compute_policy_fingerprint(
     import torch
 
     from math_loop.answers import NON_THINKING_SYSTEM_PROMPT, render_prompt
-    from math_loop.probe_loss import load_model_and_tokenizer
+    from math_loop.probe_loss import _cleanup_torch_cuda, load_model_and_tokenizer
 
-    model, tokenizer = load_model_and_tokenizer(
-        checkpoint, model_name=model_name, device=device, dtype=dtype
-    )
-    nll_values: list[float] = []
-    entropy_values: list[float] = []
-    for row in fingerprint_rows[:FINGERPRINT_PROBE_SIZE]:
-        prompt = render_prompt(
-            tokenizer, row.get("question") or row["problem"], system_prompt=NON_THINKING_SYSTEM_PROMPT
+    model = None
+    tokenizer = None
+    try:
+        model, tokenizer = load_model_and_tokenizer(
+            checkpoint, model_name=model_name, device=device, dtype=dtype
         )
-        target = (row.get("solution") or f"\\boxed{{{row['answer']}}}").strip()
-        prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
-        full_ids = tokenizer(prompt + target, add_special_tokens=False).input_ids
-        target_ids = full_ids[len(prompt_ids) :]
-        input_tensor = torch.tensor([full_ids[:max_length]], device=device)
-        with torch.no_grad():
-            logits = model(input_tensor).logits[0].float()
-        # next-token logits aligned to the target positions
-        start = max(len(prompt_ids) - 1, 0)
-        step_logits = logits[start : start + len(target_ids)].tolist()
-        nll_values.append(nll_from_logits_and_targets(step_logits, target_ids))
-        entropy_values.append(
-            sum(sequence_entropy(step_logits)) / max(len(step_logits), 1)
-        )
-    return assemble_policy_fingerprint(nll_values, entropy_values)
+        nll_values: list[float] = []
+        entropy_values: list[float] = []
+        for row in fingerprint_rows[:FINGERPRINT_PROBE_SIZE]:
+            prompt = render_prompt(
+                tokenizer, row.get("question") or row["problem"], system_prompt=NON_THINKING_SYSTEM_PROMPT
+            )
+            target = (row.get("solution") or f"\\boxed{{{row['answer']}}}").strip()
+            prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
+            full_ids = tokenizer(prompt + target, add_special_tokens=False).input_ids
+            target_ids = full_ids[len(prompt_ids) :]
+            input_tensor = torch.tensor([full_ids[:max_length]], device=device)
+            with torch.no_grad():
+                logits = model(input_tensor).logits[0].float()
+            # next-token logits aligned to the target positions
+            start = max(len(prompt_ids) - 1, 0)
+            step_logits = logits[start : start + len(target_ids)].tolist()
+            nll_values.append(nll_from_logits_and_targets(step_logits, target_ids))
+            entropy_values.append(
+                sum(sequence_entropy(step_logits)) / max(len(step_logits), 1)
+            )
+            del input_tensor, logits
+        return assemble_policy_fingerprint(nll_values, entropy_values)
+    finally:
+        del model, tokenizer
+        _cleanup_torch_cuda(torch, device)

@@ -1,9 +1,9 @@
 """End-to-end TAP v1 evaluation + report generation.
 
-    uv run python -m tap.run_all --parquet-dir outputs/tap_synth_72 --out outputs/tap_report
+    uv run python -m tap.run_all --parquet-dir outputs/tap_synth_192 --out outputs/tap_report
 
 Loads the four Parquet files, evaluates TAP + its three ablations + every baseline
-over both leave-one-chain-out directions, and writes ``results.csv`` plus
+over leave-one-chain-out directions, and writes ``results.csv`` plus
 ``report.{md,tex,pdf}`` into ``--out``. Synthetic data is the default source; pass
 ``--parquet-dir`` to point at a real collection. Exits 0 even if TAP ties or loses
 (that outcome is reported, per spec).

@@ -235,10 +235,12 @@ def compute_lora_gradient_sketch(
     import numpy as np
     import torch
 
-    from math_loop.probe_loss import load_model_and_tokenizer
+    from math_loop.probe_loss import _cleanup_torch_cuda, load_model_and_tokenizer
 
     if os.environ.get("TAP_NO_TORCH") == "1":
         return [0.0] * sketch_dim
+    model = None
+    tokenizer = None
     try:
         model, tokenizer = load_model_and_tokenizer(
             checkpoint, model_name=model_name, device=device, dtype=dtype
@@ -268,6 +270,9 @@ def compute_lora_gradient_sketch(
         return [float(v) for v in np.nan_to_num(sketch)]
     except Exception:
         return [0.0] * sketch_dim
+    finally:
+        del model, tokenizer
+        _cleanup_torch_cuda(torch, device)
 
 
 # --- dry-run CLI -------------------------------------------------------------

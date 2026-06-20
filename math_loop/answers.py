@@ -8,8 +8,8 @@ from typing import Any
 
 NON_THINKING_SYSTEM_PROMPT = (
     "/no_think\n"
-    "Solve the problem. Keep the reasoning concise and put only the final "
-    "answer inside \\boxed{}."
+    "Solve the problem briefly. Do not write headings. End with exactly one "
+    "final answer in the form \\boxed{...}."
 )
 
 
