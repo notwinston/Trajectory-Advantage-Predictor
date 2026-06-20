@@ -15,10 +15,6 @@ num_infer_gpus = 1
 [model]
 name = "Qwen/Qwen3-8B"
 
-[wandb]
-project = "qwen3-math-loop"
-name = "qwen3-math-branch"
-
 [trainer.model]
 impl = "auto"
 seq_len = 4096

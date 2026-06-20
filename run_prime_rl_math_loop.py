@@ -122,7 +122,28 @@ def run(command: list[str], *, timeout: int = 300, log: Path | None = None, stre
 
 
 def prime_json(*args: str) -> dict:
-    return json.loads(run(["prime", *args, "--output", "json"]))
+    """Parse `prime ... --output json`, tolerating non-JSON warning prefixes the
+    CLI sometimes prints before the payload (e.g. availability auth notices)."""
+    output = run(["prime", *args, "--output", "json"])
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(output):
+            if char not in "{[":
+                continue
+            try:
+                parsed, end = decoder.raw_decode(output[index:])
+            except json.JSONDecodeError:
+                continue
+            if output[index + end:].strip():
+                continue
+            prefix = output[:index].strip()
+            if prefix:
+                print(prefix, file=sys.stderr)
+            return parsed
+        tail = output[-2000:].strip()
+        raise RuntimeError(f"Prime CLI did not return parseable JSON. Output tail:\n{tail}") from exc
 
 
 def normalize_gpu_type(value: str) -> str:
@@ -376,23 +397,39 @@ class CostWallclockMonitor(threading.Thread):
 # Pod bootstrap / controller commands
 # ---------------------------------------------------------------------------
 def build_bootstrap_command(prime_rl_commit: str) -> list[str]:
+    # Pod-validated bootstrap (apt-lock retry, prime-rl submodules incl. verifiers,
+    # uv sync --all-extras, https rewrite for submodule clones) + the wave's
+    # explicit --prime-rl-commit pin.
     script = f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl git rsync python3-venv build-essential
+apt_retry() {{
+  for attempt in $(seq 1 60); do
+    apt-get -o DPkg::Lock::Timeout=30 "$@" && return 0
+    status=$?
+    echo "apt-get $* failed with status $status; waiting for package lock ($attempt/60)"
+    sleep 10
+  done
+  return "$status"
+}}
+apt_retry update
+apt_retry install -y --no-install-recommends ca-certificates curl git openssh-client rsync python3-venv build-essential
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="url.https://github.com/.insteadOf"
+export GIT_CONFIG_VALUE_0="git@github.com:"
 if [ ! -d {REMOTE_PRIME_RL}/.git ]; then
-  git clone {PRIME_RL_REPO_URL} {REMOTE_PRIME_RL}
+  git clone --recurse-submodules {PRIME_RL_REPO_URL} {REMOTE_PRIME_RL}
 fi
 cd {REMOTE_PRIME_RL}
 git fetch --all --tags
 git checkout {shlex.quote(prime_rl_commit)}
+git submodule update --init --recursive
 git rev-parse HEAD
-uv sync
+uv sync --all-extras
 mkdir -p {REMOTE_WORK}
 """
     return ["bash", "-lc", script]
@@ -404,6 +441,8 @@ def _remote_env_prefix() -> list[str]:
         'export PATH="$HOME/.local/bin:/root/.local/bin:$PATH"',
         f"export PYTHONPATH={shlex.quote(REMOTE_REPO)}:${{PYTHONPATH:-}}",
         f"export HF_HOME={shlex.quote(REMOTE_WORK + '/hf_cache')}",
+        "export WANDB_MODE=disabled",
+        "export WANDB_DISABLED=true",
     ]
 
 
@@ -649,7 +688,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cloud-id")
     parser.add_argument("--offer-id", help="skip offer selection and create this exact Prime offer id")
     parser.add_argument("--gpu-type", default=DEFAULT_GPU_TYPE)
-    parser.add_argument("--gpu-count", type=int, default=1)
+    parser.add_argument("--gpu-count", type=int, default=2)
     parser.add_argument("--image", default=PRIME_RL_IMAGE)
     parser.add_argument("--prime-rl-commit", default=None,
                         help="REQUIRED for a real launch: pin prime-rl to this commit sha.")
@@ -688,27 +727,26 @@ def validate_args(args: argparse.Namespace) -> None:
     full_run_allowed = os.environ.get("TAP_ALLOW_FULL_RUN") == "1"
 
     if args.smoke:
-        # Smoke is the only thing the loop can launch unattended:
-        # 1 chain x 1 state x 2 candidates on a single GPU.
-        args.chains = 1
+        # The sanctioned cheap test: 2 chains x 1 state x 2 candidates. Two chains
+        # keep tap.run_all's leave-one-chain-out split non-degenerate; prime-rl
+        # needs >=2 GPUs (1 trainer + 1 inference), so the smoke runs on 2xH100.
+        args.chains = 2
         args.states = 1
         args.candidates_per_state = 2
-        args.gpu_count = 1
+        args.gpu_count = max(args.gpu_count, 2)
+        if args.gpu_count > 4 and not full_run_allowed:
+            raise SystemExit("--smoke --gpu-count is capped at 4")
     else:
-        # A non-smoke (full / collection) run requires the explicit env gate.
+        # A non-smoke (full / collection) run requires the explicit env gate so
+        # the loop can never launch the expensive 4xH100 collection on its own.
         if not full_run_allowed:
             raise SystemExit(
                 "Refusing a non-smoke run: set TAP_ALLOW_FULL_RUN=1 to launch a real "
-                "collection (the loop never sets it). Use --smoke for the cheap 1xH100 test."
+                "collection (the loop never sets it). Use --smoke for the cheap 2xH100 test."
             )
 
-    if args.gpu_count > 1 and not full_run_allowed:
-        raise SystemExit(
-            f"--gpu-count {args.gpu_count} > 1 requires TAP_ALLOW_FULL_RUN=1 "
-            "(this wave only launches 1xH100)."
-        )
-    if args.gpu_count < 1:
-        raise SystemExit("--gpu-count must be at least 1")
+    if args.gpu_count < 2:
+        raise SystemExit("--gpu-count must be at least 2 (prime-rl needs 1 trainer + 1 inference GPU)")
 
     if not args.pod_prefix.startswith(WAVE_POD_PREFIX):
         raise SystemExit(f"--pod-prefix must start with {WAVE_POD_PREFIX!r} so reaping is safe.")
@@ -740,7 +778,7 @@ def print_plan(args: argparse.Namespace, repo_root: Path) -> None:
     print(f"wall-clock cap:     {wall/3600:.2f}h  (independent absolute deadline)")
     print(f"pod name prefix:    {args.pod_prefix}")
     print(f"ssh key:            {args.ssh_key}")
-    print(f"mode:               {'SMOKE (1 state x 2 candidates, gpu=1)' if args.smoke else 'FULL (requires TAP_ALLOW_FULL_RUN=1)'}")
+    print(f"mode:               {'SMOKE (2 chains x 1 state x 2 candidates, 2xH100)' if args.smoke else 'FULL (requires TAP_ALLOW_FULL_RUN=1)'}")
     print("teardown:           atexit + SIGINT/SIGTERM + monitor breach ->")
     print(f"                    reap_pods.py --terminate-prefix {args.pod_prefix} AND --terminate-id <pod_id.txt>")
     print(f"                    (--keep-pod is forbidden; pod_id.txt written on create)")

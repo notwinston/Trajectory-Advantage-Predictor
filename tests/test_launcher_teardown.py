@@ -111,11 +111,11 @@ class ArgGateTest(unittest.TestCase):
                 launcher.validate_args(args)
         self.assertIn("TAP_ALLOW_FULL_RUN", str(ctx.exception))
 
-    def test_smoke_forces_gpu_count_1(self):
-        args = launcher.parse_args(["--smoke", "--gpu-count", "4", "--dry-run",
-                                    "--prime-rl-commit", "abc123"])
+    def test_smoke_sets_collection_shape(self):
+        args = launcher.parse_args(["--smoke", "--dry-run", "--prime-rl-commit", "abc123"])
         launcher.validate_args(args)
-        self.assertEqual(args.gpu_count, 1)
+        self.assertEqual(args.gpu_count, 2)  # prime-rl needs 1 trainer + 1 inference
+        self.assertEqual(args.chains, 2)     # >=2 chains so tap.run_all split is valid
         self.assertEqual(args.states, 1)
         self.assertEqual(args.candidates_per_state, 2)
 

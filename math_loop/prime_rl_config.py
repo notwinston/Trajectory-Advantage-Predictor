@@ -29,6 +29,7 @@ class PrimeRLConfigSpec:
     clean_output_dir: bool = False
     run_name: str = "qwen3-math-loop"
     system_prompt: str = NON_THINKING_SYSTEM_PROMPT
+    renderer_name: str = "auto"
 
 
 def _toml_str(value: str | Path) -> str:
@@ -59,10 +60,6 @@ num_infer_gpus = {spec.num_infer_gpus}
 
 [model]
 name = {_toml_str(spec.model_name)}
-
-[wandb]
-project = "qwen3-math-loop"
-name = {_toml_str(spec.run_name)}
 
 [trainer.model]
 impl = "auto"
@@ -116,7 +113,7 @@ enable_lora = true
 gpu_memory_utilization = 0.80
 
 [orchestrator.renderer]
-name = "auto"
+name = {_toml_str(spec.renderer_name)}
 """
 
 

@@ -130,13 +130,33 @@ def normalize_math500_row(row: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
+def normalize_math_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize MATH rows, SKIPPING any without a usable problem/answer.
+
+    The real ``chiayewken/competition_math`` split contains rows that lack a
+    boxed answer; crashing on them would abort data prep on the pod (this was the
+    failure Mark's fresh-branch loop hit). We drop them and report the count.
+    """
+    normalized: list[dict[str, Any]] = []
+    skipped = 0
+    for index, row in enumerate(rows):
+        try:
+            normalized.append(normalize_math_row(row, index))
+        except ValueError:
+            skipped += 1
+    if skipped:
+        print(f"Skipping {skipped} MATH rows without usable labels", flush=True)
+    return normalized
+
+
 def split_math_rows(
     rows: Sequence[dict[str, Any]], *, probe_size: int = 128, seed: int = 1729
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if len(rows) <= probe_size:
-        raise ValueError(f"need more than {probe_size} MATH rows, got {len(rows)}")
-
-    normalized = [normalize_math_row(row, index) for index, row in enumerate(rows)]
+    normalized = normalize_math_rows(rows)
+    if len(normalized) <= probe_size:
+        raise ValueError(
+            f"need more than {probe_size} valid MATH rows after filtering, got {len(normalized)}"
+        )
     indices = list(range(len(normalized)))
     random.Random(seed).shuffle(indices)
     probe_indices = set(indices[:probe_size])
