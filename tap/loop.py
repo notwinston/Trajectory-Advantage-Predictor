@@ -84,8 +84,16 @@ def _rows_of(cohort, rows_by_id):
     return [rows_by_id[p] for p in cohort.prompt_ids if p in rows_by_id]
 
 
+def _roll(model, tok, cohort, rows_by_id, cfg, probe_unigrams):
+    rows = _rows_of(cohort, rows_by_id)
+    noisy = set(map(str, cohort.meta.get("noisy_ids", [])))
+    trajs, feats, _, _ = collect_trajectories(model, tok, rows, cfg, noisy, probe_unigrams)
+    return trajs, feats, cfg.group_size * len(rows)
+
+
 def climb(model, tok, cfg, base_snap, pool, rows_by_id, probe_unigrams, eval_set, *,
-          arm, seed, steps, cand_per_step, acc_every, out_path, nll0, acc0):
+          arm, seed, steps, cand_per_step, acc_every, out_path, nll0, acc0,
+          score_mode="cached", feat_cache=None):
     import torch
 
     _reset(model, base_snap)
@@ -103,36 +111,39 @@ def climb(model, tok, cfg, base_snap, pool, rows_by_id, probe_unigrams, eval_set
     for step in range(1, steps + 1):
         torch.manual_seed(7919 * (seed + 1) + step)
         t0 = time.time()
-        if arm == "online":
+        if arm == "online" and score_mode == "dynamic":   # re-score (re-roll) candidates each step
             cands = remaining if cand_per_step <= 0 else rng.sample(remaining, min(cand_per_step, len(remaining)))
-            best = None  # (pred, cohort, trajs, feats)
+            best = None
             for c in cands:
-                rows = _rows_of(c, rows_by_id)
-                if not rows:
+                if not _rows_of(c, rows_by_id):
                     continue
-                noisy = set(map(str, c.meta.get("noisy_ids", [])))
-                trajs, feats, _, _ = collect_trajectories(model, tok, rows, cfg, noisy, probe_unigrams)
-                gens += cfg.group_size * len(rows)
+                trajs, feats, g = _roll(model, tok, c, rows_by_id, cfg, probe_unigrams)
+                gens += g
                 pv = predictor.predict(feats)
                 if best is None or pv > best[0]:
                     best = (pv, c, trajs, feats)
-            predicted_lift, pick, pick_trajs, pick_feats = best
-        else:  # random: roll only the pick (on-policy)
+            predicted_lift, pick, pick_trajs, score_feats = best
+        elif arm == "online":                              # cached: rank by one-time measured features
+            predicted_lift, pick = max(((predictor.predict(feat_cache[c.name]), c)
+                                        for c in remaining if c.name in feat_cache), key=lambda x: x[0])
+            score_feats = feat_cache[pick.name]
+            pick_trajs, _, g = _roll(model, tok, pick, rows_by_id, cfg, probe_unigrams)  # on-policy train rollout
+            gens += g
+        else:                                              # random
             pick = rng.choice(remaining)
-            rows = _rows_of(pick, rows_by_id)
-            noisy = set(map(str, pick.meta.get("noisy_ids", [])))
-            pick_trajs, pick_feats, _, _ = collect_trajectories(model, tok, rows, cfg, noisy, probe_unigrams)
-            gens += cfg.group_size * len(rows)
+            pick_trajs, score_feats, g = _roll(model, tok, pick, rows_by_id, cfg, probe_unigrams)
+            gens += g
             predicted_lift = None
 
-        ts = grpo_train(model, pick_trajs, cfg, opt, tok.pad_token_id)   # reuse on-policy trajs
+        ts = grpo_train(model, pick_trajs, cfg, opt, tok.pad_token_id)
         remaining.remove(pick)
         nll = eval_nll(model, tok, eval_set, cfg)
         realized_lift = prev_nll - nll                                    # the REAL gain
         do_acc = cfg.acc_eval and (step % acc_every == 0 or step == steps)
         acc = eval_accuracy(model, tok, eval_set, cfg) if do_acc else None
         if predictor is not None:
-            predictor.observe(pick_feats, realized_lift)                  # <-- predictor LEARNS
+            predictor.observe(score_feats, realized_lift)                # <-- predictor LEARNS
+        pick_feats = score_feats
 
         _append(out_path, {"arm": arm, "seed": seed, "step": step, "picked": pick.name,
                            "adv_std": pick_feats.get("adv_std"), "predicted_lift": predicted_lift,
@@ -167,6 +178,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--pool-size", type=int, default=30)
     p.add_argument("--steps", type=int, default=12)
     p.add_argument("--candidates-per-step", type=int, default=8, help="dynamic scoring breadth; 0=all remaining")
+    p.add_argument("--score-mode", choices=("cached", "dynamic"), default="cached",
+                   help="cached: measure cohorts ONCE then rank (fast); dynamic: re-roll candidates each step (faithful, ~3x slower)")
     p.add_argument("--acc-every", type=int, default=3, help="greedy accuracy eval cadence (nll is every step)")
     p.add_argument("--random-seeds", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -195,15 +208,21 @@ def main(argv: list[str] | None = None) -> None:
     acc0 = eval_accuracy(model, tok, eval_set, cfg) if cfg.acc_eval else 0.0
     nll0 = eval_nll(model, tok, eval_set, cfg)
     print(f"[loop] init acc={acc0:.3f} nll={nll0:.4f} | pool={len(pool)} steps={args.steps} "
-          f"cand/step={args.candidates_per_step} model={args.model_name} domain={args.domain}", flush=True)
+          f"score={args.score_mode} model={args.model_name} domain={args.domain}", flush=True)
 
-    climb(model, tok, cfg, base_snap, pool, rows_by_id, probe_unigrams, eval_set,
-          arm="online", seed=0, steps=args.steps, cand_per_step=args.candidates_per_step,
-          acc_every=args.acc_every, out_path=args.output, nll0=nll0, acc0=acc0)
+    feat_cache = None
+    if args.score_mode == "cached":   # measure every cohort ONCE (like the battery), then rank from it
+        feat_cache = {}
+        for i, c in enumerate(pool):
+            _, feats, _ = _roll(model, tok, c, rows_by_id, cfg, probe_unigrams)
+            feat_cache[c.name] = feats
+        print(f"[loop] cached features for {len(feat_cache)} cohorts (one-time measurement)", flush=True)
+
+    kw = dict(steps=args.steps, cand_per_step=args.candidates_per_step, acc_every=args.acc_every,
+              out_path=args.output, nll0=nll0, acc0=acc0, score_mode=args.score_mode, feat_cache=feat_cache)
+    climb(model, tok, cfg, base_snap, pool, rows_by_id, probe_unigrams, eval_set, arm="online", seed=0, **kw)
     for s in range(args.random_seeds):
-        climb(model, tok, cfg, base_snap, pool, rows_by_id, probe_unigrams, eval_set,
-              arm="random", seed=s, steps=args.steps, cand_per_step=args.candidates_per_step,
-              acc_every=args.acc_every, out_path=args.output, nll0=nll0, acc0=acc0)
+        climb(model, tok, cfg, base_snap, pool, rows_by_id, probe_unigrams, eval_set, arm="random", seed=s, **kw)
     print("[loop] done", flush=True)
 
 

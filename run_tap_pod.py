@@ -131,6 +131,7 @@ def build_loop_command(args: argparse.Namespace) -> list[str]:
            "--pool-size", str(args.pool_size),
            "--steps", str(args.steps),
            "--candidates-per-step", str(args.candidates_per_step),
+           "--score-mode", args.score_mode,
            "--random-seeds", str(args.random_seeds),
            "--acc-every", str(args.acc_every),
            "--lr", str(args.lr),
@@ -226,6 +227,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--steps", type=int, default=20, help="loop: climb steps (cohorts trained on)")
     p.add_argument("--pool-size", type=int, default=40, help="loop: number of candidate cohorts")
     p.add_argument("--candidates-per-step", type=int, default=0, help="loop: predictor scoring breadth (0=all)")
+    p.add_argument("--score-mode", choices=("cached", "dynamic"), default="cached", help="loop: cached (fast) | dynamic")
     p.add_argument("--random-seeds", type=int, default=3, help="loop: random-arm repeats")
     p.add_argument("--acc-every", type=int, default=3, help="loop: greedy accuracy eval cadence (nll is every step)")
     p.add_argument("--no-acc-eval", dest="acc_eval", action="store_false",
