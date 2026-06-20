@@ -66,9 +66,20 @@ class RolloutStats:
     logprob_p90: float | None
     confidence_slope: float | None
     redundancy_mean: float | None
+    min_logprob_mean: float | None
     # shape
     len_mean: float | None
     len_std: float | None
+    len_max: float | None
+    len_cv: float | None
+    # advantage = GRPO signal strength. adv_std is the single strongest NLL-lift
+    # predictor we have (~0.79, marginally > frac_nondegenerate; r=0.98 to it --
+    # same latent axis "how much differentiated learning signal the cohort carries").
+    adv_std: float | None
+    adv_absmean: float | None
+    # cheap curiosity / diversity (weak independent signal, recorded for completeness)
+    reward_gap: float | None
+    distinct_frac: float | None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -91,9 +102,9 @@ def _q(xs: Sequence[float], p: float) -> float | None:
 def summarize_rollouts(rollouts: Sequence[Mapping[str, Any]]) -> RolloutStats:
     """Aggregate per-completion rollout dicts into a candidate feature record.
 
-    Expected (optional) per-rollout keys: ``group_id``, ``reward``,
+    Expected (optional) per-rollout keys: ``group_id``, ``reward``, ``advantage``,
     ``completion_tokens``, ``mean_logprob``, ``mean_entropy``, ``early_logprob``,
-    ``late_logprob``.
+    ``late_logprob``, ``min_logprob``, ``comp_hash``.
     """
 
     rewards = [v for v in (_f(r.get("reward")) for r in rollouts) if v is not None]
@@ -102,6 +113,9 @@ def summarize_rollouts(rollouts: Sequence[Mapping[str, Any]]) -> RolloutStats:
     ents = [v for v in (_f(r.get("mean_entropy")) for r in rollouts) if v is not None]
     early = [v for v in (_f(r.get("early_logprob")) for r in rollouts) if v is not None]
     late = [v for v in (_f(r.get("late_logprob")) for r in rollouts) if v is not None]
+    advs = [v for v in (_f(r.get("advantage")) for r in rollouts) if v is not None]
+    mins = [v for v in (_f(r.get("min_logprob")) for r in rollouts) if v is not None]
+    hashes = [r.get("comp_hash") for r in rollouts if r.get("comp_hash") is not None]
 
     reward_mean = _mean(rewards)
     pass_rate = _mean([1.0 if r > 0.5 else 0.0 for r in rewards]) if rewards else 0.0
@@ -147,8 +161,15 @@ def summarize_rollouts(rollouts: Sequence[Mapping[str, Any]]) -> RolloutStats:
         logprob_p90=_q(logps, 0.90),
         confidence_slope=slope,
         redundancy_mean=(_mean([math.exp(x) for x in logps]) if logps else None),
+        min_logprob_mean=_mean(mins) if mins else None,
         len_mean=_mean(lengths) if lengths else None,
         len_std=_std(lengths) if lengths else None,
+        len_max=max(lengths) if lengths else None,
+        len_cv=(_std(lengths) / (_mean(lengths) + _EPS)) if lengths else None,
+        adv_std=_std(advs) if advs else None,
+        adv_absmean=_mean([abs(a) for a in advs]) if advs else None,
+        reward_gap=(max(rewards) - min(rewards)) if rewards else None,
+        distinct_frac=(len(set(hashes)) / len(hashes)) if hashes else None,
     )
 
 
@@ -208,6 +229,12 @@ FEATURE_KEYS: tuple[str, ...] = (
     "len_std",
     "target_similarity",
     "n_groups",
+    # advantage-spread = GRPO signal strength; single strongest NLL-lift predictor
+    # (within-domain spearman 0.92/0.68/0.78/0.68; ~ceiling for 3 of 4 domains).
+    "adv_std",
+    "adv_absmean",
+    # weak but partially-orthogonal to adv_std in the headroom domain (codemmlu).
+    "min_logprob_mean",
 )
 
 

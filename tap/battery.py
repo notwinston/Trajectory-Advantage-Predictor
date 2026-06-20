@@ -402,7 +402,9 @@ def collect_trajectories(model, tok, cohort_rows, cfg: BatteryConfig, noisy_ids:
                 t.late_logprob = sum(vals[half:]) / max(len(vals) - half, 1)
             rollouts.append({"group_id": t.group_id, "reward": t.reward, "completion_tokens": t.n_tokens,
                              "mean_logprob": t.mean_logprob, "early_logprob": t.early_logprob,
-                             "late_logprob": t.late_logprob})
+                             "late_logprob": t.late_logprob, "advantage": t.advantage,
+                             "min_logprob": (min(vals) if vals else None),
+                             "comp_hash": hash(tuple(t.comp_ids))})
     stats = F.summarize_rollouts(rollouts).as_dict()
     tsim = F.target_similarity(tok_lists, probe_unigrams)
     return trajs, stats, tsim, len(trajs)

@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     rows = load_many(args.labels)
-    rows = [r for r in rows if target_from_row(r, mode=args.label) is not None]
+    rows = [r for r in rows if (v := target_from_row(r, mode=args.label)) is not None and np.isfinite(v)]
     if len(rows) < 5:
         raise SystemExit(f"only {len(rows)} usable labels; need more")
     kinds = [_kind(r) for r in rows]

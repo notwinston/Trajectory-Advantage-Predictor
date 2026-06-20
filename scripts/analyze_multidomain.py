@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     rows = load_many(args.labels)
-    rows = [r for r in rows if target_from_row(r, mode=args.label) is not None]
+    rows = [r for r in rows if (v := target_from_row(r, mode=args.label)) is not None and np.isfinite(v)]
     doms = [r.get("domain", "?") for r in rows]
     print(f"{len(rows)} labels; domains: {dict(Counter(doms))}")
 
