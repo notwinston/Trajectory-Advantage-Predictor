@@ -458,6 +458,24 @@ def _append(path: Path, row: dict) -> None:
         h.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=float) + "\n")
 
 
+def _append_rollouts(label_path: Path, rec: dict, trajs: list, domain: str) -> None:
+    """Persist the RAW per-completion rollouts beside the labels so NEW features can be
+    re-aggregated later WITHOUT re-running the model -- only the lift label needs the
+    model, and that's already paid for. Makes the (expensive) labels a reusable asset."""
+
+    path = label_path.with_name(label_path.stem + "_rollouts.jsonl")
+    roll = {
+        "key": f"{rec.get('chain_id')}.{rec.get('anchor_index')}.{rec.get('candidate_id')}.{rec.get('seed')}",
+        "domain": domain,
+        "trajs": [{"group_id": t.group_id, "reward": t.reward, "advantage": t.advantage,
+                   "comp_ids": list(t.comp_ids),
+                   "token_logp": [round(float(x), 4) for x in t.old_token_logp]} for t in trajs],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as h:
+        h.write(json.dumps(roll, ensure_ascii=False) + "\n")
+
+
 def completed_keys(path: Path) -> set:
     """(chain, anchor, candidate, seed) keys already in labels.jsonl (resume support)."""
 
@@ -560,6 +578,7 @@ def run_battery(cfg: BatteryConfig, cohorts: Sequence[Cohort], probes: dict, row
                         "wall_clock_s": time.time() - t0,
                     }
                     _append(out_path, rec)
+                    _append_rollouts(out_path, rec, trajs, cfg.domain_name)  # raw rollouts -> future features free
                     records.append(rec)
                     _write_status(out_path, chain=chain, anchor=anchor, candidate=cohort.name, seed=seed,
                                   labels_done=len(done) + len(records), last_lift_acc=rec["lift_acc"],
