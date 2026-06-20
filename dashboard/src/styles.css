@@ -1,0 +1,961 @@
+:root {
+  color-scheme: dark;
+  background: #05070a;
+  color: #e8edf5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  font-family: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 960px;
+  min-height: 100vh;
+  background: #05070a;
+  font-weight: 400;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: none;
+}
+
+.app {
+  height: 100vh;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: 78px minmax(0, 1fr) 62px;
+  background: #05070a;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid #161b24;
+  background: #080b10;
+}
+
+.appLabel,
+.metaLine,
+.sectionMeta {
+  margin: 0 0 5px;
+  color: #7f8a9b;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.topbar h2,
+.vizHeader h1 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.topbar h2 {
+  color: #f1f5fb;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.runPicker {
+  width: 310px;
+}
+
+.runPicker label,
+.sideBlock label {
+  display: block;
+  margin-bottom: 7px;
+  color: #7f8a9b;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+select {
+  width: 100%;
+  height: 38px;
+  border: 0;
+  border-radius: 4px;
+  background: #101722;
+  color: #eef3fa;
+  padding: 0 11px;
+}
+
+.workspace {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 316px;
+}
+
+.stage {
+  min-width: 0;
+  min-height: 0;
+  padding: 20px 24px;
+  overflow: auto;
+  background: #05070a;
+}
+
+.vizHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.vizHeader h1 {
+  max-width: 560px;
+  overflow: hidden;
+  color: #f4f7fb;
+  font-size: 23px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metricStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(104px, 1fr));
+  gap: 8px;
+}
+
+.metric {
+  min-height: 54px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: #0a0d12;
+}
+
+.metric span {
+  display: block;
+  margin-bottom: 5px;
+  color: #828c9c;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.metric strong {
+  color: #e9eef7;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.metric.good strong {
+  color: #10a37f;
+}
+
+.metric.bad strong {
+  color: #ef4146;
+}
+
+.chartPanel {
+  border-radius: 4px;
+  background: #0a0d12;
+}
+
+.waterfall {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 410px;
+}
+
+.ridgeStage {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ridgeStage .vizHeader {
+  flex: 0 0 auto;
+}
+
+.ridgeMetrics {
+  min-width: 500px;
+}
+
+.ridgeLayout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 292px;
+  gap: 16px;
+}
+
+.ridgeLayout.readoutCollapsed {
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+}
+
+.ridgeLayout.readoutOpen {
+  grid-template-columns: minmax(0, 1fr) 292px;
+}
+
+.ridgeSceneWrap {
+  position: relative;
+  min-width: 0;
+  min-height: 420px;
+  overflow: hidden;
+  background: #05070a;
+}
+
+.gradientLegend,
+.axisLegend {
+  position: absolute;
+  z-index: 2;
+  border-radius: 4px;
+  background: #080b10;
+  color: #8d98aa;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.gradientLegend {
+  left: 12px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+}
+
+.gradientLegend i {
+  display: grid;
+  grid-template-columns: repeat(3, 18px);
+  gap: 2px;
+  width: 58px;
+  height: 7px;
+  font-style: normal;
+}
+
+.gradientLegend em {
+  display: block;
+  border-radius: 2px;
+}
+
+.gradientLegend em:nth-child(1) {
+  background: #10a37f;
+}
+
+.gradientLegend em:nth-child(2) {
+  background: #d1a72c;
+}
+
+.gradientLegend em:nth-child(3) {
+  background: #ef4146;
+}
+
+.axisLegend {
+  left: 12px;
+  bottom: 10px;
+  display: grid;
+  gap: 4px;
+  max-width: min(540px, calc(100% - 24px));
+  padding: 8px 9px;
+}
+
+.axisLegend span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ridgeViewport {
+  position: absolute;
+  inset: 0;
+}
+
+.ridgeCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.ridgeCanvas:active {
+  cursor: grabbing;
+}
+
+.ridgeTooltip {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  gap: 2px;
+  min-width: 132px;
+  border-radius: 4px;
+  background: #080b10;
+  color: #dbe3ef;
+  padding: 8px 9px;
+  pointer-events: none;
+}
+
+.ridgeTooltip strong,
+.ridgeTooltip b,
+.ridgeTooltip span {
+  display: block;
+}
+
+.ridgeTooltip strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ridgeTooltip b,
+.ridgeTooltip span {
+  font-size: 12px;
+}
+
+.ridgeTooltip span {
+  color: #8b96a8;
+}
+
+.ridgeReadout {
+  min-width: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.ridgeReadout.collapsed {
+  overflow: visible;
+  gap: 0;
+}
+
+.readoutToggle {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 4px;
+  background: #101722;
+  color: #dce3ee;
+  font-weight: 600;
+}
+
+.ridgeReadout.collapsed .readoutToggle {
+  height: 100%;
+  min-height: 420px;
+  padding: 0;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.readoutToggle span {
+  display: inline-block;
+}
+
+.readoutContent {
+  display: grid;
+  gap: 14px;
+}
+
+.ridgeReadout.collapsed .readoutContent {
+  display: none;
+}
+
+.ridgeReadout section {
+  border-radius: 4px;
+  background: #0a0d12;
+  padding: 12px;
+}
+
+.ridgeReadout h3 {
+  margin: 0 0 10px;
+  color: #eef3fa;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.changeList,
+.pcList {
+  display: grid;
+  gap: 6px;
+}
+
+.changeRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 4px;
+  background: #101722;
+  padding: 5px 7px;
+}
+
+.changeRow span,
+.pcBlock p span {
+  min-width: 0;
+  overflow: hidden;
+  color: #a8b2c2;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changeRow b,
+.pcBlock p b {
+  color: #dce3ee;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pcBlock {
+  border-radius: 4px;
+  background: #101722;
+  padding: 8px;
+}
+
+.pcBlock > div,
+.pcBlock p {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pcBlock > div {
+  margin-bottom: 5px;
+}
+
+.pcBlock strong {
+  color: #eef3fa;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pcBlock > div span {
+  color: #8b96a8;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pcBlock p {
+  margin: 0;
+  padding: 2px 0;
+}
+
+.zeroLine {
+  stroke: #343b47;
+  stroke-width: 1;
+  stroke-dasharray: 3 7;
+}
+
+.connector {
+  stroke: #242a34;
+  stroke-width: 1;
+}
+
+.featureLabel {
+  fill: #aeb8c8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.valueLabel {
+  fill: #d9e0ec;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bar {
+  stroke-width: 0;
+}
+
+.bar.pos {
+  fill: #10a37f;
+}
+
+.bar.neg {
+  fill: #ef4146;
+}
+
+.bar.base {
+  fill: #6d86b7;
+}
+
+.bar.final {
+  fill: #d8dee8;
+}
+
+.sidebar {
+  min-height: 0;
+  padding: 16px 14px;
+  border-left: 1px solid #161b24;
+  background: #080b10;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.sideBlock.grow {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vizButton,
+.candidateButton {
+  position: relative;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #dce3ee;
+}
+
+.vizButton {
+  height: 38px;
+  margin-bottom: 4px;
+  padding: 0 10px;
+  text-align: left;
+  font-weight: 500;
+}
+
+.vizButton.active,
+.candidateButton.selected {
+  background: #101722;
+}
+
+.vizButton.active::before,
+.candidateButton.selected::before,
+.trajectoryCard.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: #10a37f;
+}
+
+.candidateList {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+}
+
+.candidateButton {
+  min-height: 52px;
+  padding: 8px 10px 8px 12px;
+  text-align: left;
+}
+
+.candidateButton span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.candidateButton small {
+  color: #7f8a9b;
+  font-size: 12px;
+}
+
+.stepbar {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 10px 24px;
+  border-top: 1px solid #161b24;
+  background: #080b10;
+}
+
+.stepMeta {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  color: #7f8a9b;
+  font-size: 13px;
+}
+
+.stepMeta strong {
+  color: #eef3fa;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #10a37f;
+}
+
+.loading,
+.empty {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  color: #9aa5b5;
+}
+
+.explorerStage {
+  padding-bottom: 28px;
+}
+
+.explorerGrid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 12px;
+}
+
+.dataPanel {
+  min-width: 0;
+  border-radius: 4px;
+  background: #0a0d12;
+  padding: 14px;
+}
+
+.dataPanel.wide {
+  grid-column: 1 / -1;
+}
+
+.panelHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panelHead h3,
+.dataPanel h4 {
+  margin: 0;
+  color: #eef3fa;
+  font-weight: 600;
+}
+
+.panelHead h3 {
+  font-size: 17px;
+}
+
+.dataPanel h4 {
+  margin-top: 14px;
+  margin-bottom: 9px;
+  font-size: 13px;
+  color: #a8b2c2;
+}
+
+.sectionMeta {
+  margin-top: 3px;
+  margin-bottom: 0;
+}
+
+.pill {
+  flex: 0 0 auto;
+  border-radius: 4px;
+  padding: 4px 7px;
+  background: #101722;
+  color: #a8b2c2;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pill.muted {
+  color: #7f8a9b;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.statCell {
+  min-height: 54px;
+  border-radius: 4px;
+  background: #101722;
+  padding: 8px 9px;
+}
+
+.statCell span {
+  display: block;
+  overflow: hidden;
+  margin-bottom: 6px;
+  color: #828c9c;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statCell strong {
+  color: #e9eef7;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.statCell.good strong,
+.green {
+  color: #10a37f;
+}
+
+.statCell.bad strong,
+.red {
+  color: #ef4146;
+}
+
+.promptList {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.promptCard {
+  border-radius: 4px;
+  background: #101722;
+  padding: 10px;
+}
+
+.promptCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.promptCard code {
+  min-width: 0;
+  overflow: hidden;
+  color: #8b96a8;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.promptCardHead span {
+  color: #8b96a8;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.promptCard p {
+  margin: 0;
+  color: #e1e7f0;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.promptCard.missing p {
+  color: #8b96a8;
+}
+
+.note {
+  margin: 0 0 12px;
+  color: #8d98aa;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.trajectoryList {
+  display: grid;
+  gap: 6px;
+}
+
+.trajectoryCard {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 60px;
+  border: 0;
+  border-radius: 4px;
+  background: #101722;
+  color: #e8edf5;
+  padding: 9px 11px 9px 13px;
+  text-align: left;
+}
+
+.trajectoryCard strong,
+.trajectoryCard b,
+.trajectoryCard span {
+  display: block;
+}
+
+.trajectoryCard strong {
+  font-weight: 600;
+}
+
+.trajectoryCard span {
+  margin-top: 3px;
+  color: #828c9c;
+  font-size: 12px;
+}
+
+.featureGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.featureChip {
+  min-height: 50px;
+  border-radius: 4px;
+  background: #101722;
+  padding: 8px;
+}
+
+.featureChip span {
+  display: block;
+  overflow: hidden;
+  margin-bottom: 5px;
+  color: #828c9c;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.featureChip strong {
+  color: #e9eef7;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jsonPanel {
+  padding: 0;
+  background: transparent;
+}
+
+.jsonPanel summary {
+  width: max-content;
+  border-radius: 4px;
+  background: #0a0d12;
+  color: #8d98aa;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  list-style: none;
+  padding: 8px 10px;
+}
+
+.jsonPanel summary::-webkit-details-marker {
+  display: none;
+}
+
+.jsonPanel pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 8px 0 0;
+  border-radius: 4px;
+  background: #080b10;
+  color: #b9c3d2;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  body {
+    min-width: 0;
+  }
+
+  .app {
+    height: auto;
+    min-height: 100vh;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .topbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .runPicker {
+    width: 100%;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: visible;
+  }
+
+  .stage {
+    overflow: visible;
+    padding: 16px;
+  }
+
+  .vizHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .vizHeader h1 {
+    max-width: 100%;
+  }
+
+  .metricStrip,
+  .ridgeMetrics {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ridgeLayout,
+  .explorerGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .ridgeLayout.readoutCollapsed,
+  .ridgeLayout.readoutOpen {
+    grid-template-columns: 1fr;
+  }
+
+  .ridgeSceneWrap {
+    height: clamp(340px, 48vh, 420px);
+    min-height: 340px;
+  }
+
+  .ridgeReadout {
+    grid-template-columns: 1fr;
+  }
+
+  .ridgeReadout.collapsed .readoutToggle {
+    min-height: 40px;
+    writing-mode: horizontal-tb;
+  }
+
+  .sidebar {
+    border-left: 0;
+    border-top: 1px solid #161b24;
+  }
+
+  .candidateList {
+    max-height: 220px;
+  }
+
+  .stepbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
